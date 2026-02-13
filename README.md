@@ -1,40 +1,31 @@
 # Wine Selector
 
-An Android app that recommends wines from a photographed wine list based on what you're eating. Point your camera at any wine list, select your food, and get an AI-powered pairing recommendation instantly.
+An Android app that recommends wines from a photographed wine list based on what you're eating. Point your camera at any wine list, select your food, and get a pairing recommendation instantly.
 
-Powered by Google Gemini's free-tier vision API — no paid API subscription required.
+**Works fully offline** — no API key, no cloud service, no internet required. Uses on-device text recognition and a built-in wine pairing knowledge base.
 
 ## How It Works
 
 1. **Pick your food** — Choose from 12 categories: Beef, Pork, Chicken, Pasta, Fish, Seafood, Lamb, Vegetarian, Cheese, Dessert, Sushi, Pizza
-2. **Scan the wine list** — Take a photo of any wine list using the built-in camera
-3. **Get a recommendation** — Gemini's vision AI reads the wine list and recommends the best pairing, explaining why it's a good match and noting the price if visible
+2. **Scan the wine list** — Take a photo of any wine list using the in-app camera
+3. **Get a recommendation** — The app reads the wine list, matches wines against a knowledge base of 60+ grape varieties and regions, and recommends the best pairing with an explanation
 
 ## Screenshots
 
-The app has four screens:
+The app has three screens:
 
 - **Home** — Food category picker with emoji icons and a "Scan Wine List" button
-- **Camera** — Full-screen CameraX viewfinder with a capture button
-- **Result** — Displays the AI recommendation with wine name, price, pairing explanation, and runner-up
-- **Settings** — Enter and manage your Google AI API key
+- **Camera** — Full-screen CameraX viewfinder with a capture button (no confirmation step — instant capture)
+- **Result** — Displays the recommendation with wine name, price (if detected), pairing explanation, and runner-up
 
 ## Setup
 
 ### Prerequisites
 
-- A free [Google AI Studio API key](https://aistudio.google.com/apikey) (no billing required)
 - An Android device running Android 8.0 (API 26) or higher
 - A camera on the device
 
-### Getting Your Free API Key
-
-1. Go to [aistudio.google.com](https://aistudio.google.com/apikey)
-2. Sign in with your Google account
-3. Click "Create API key"
-4. Copy the key (starts with `AIza...`)
-
-No credit card or billing setup needed. The free tier includes generous usage limits.
+That's it — no API key or account needed.
 
 ### Install the APK
 
@@ -55,12 +46,10 @@ Or transfer the APK file to your device and install it directly.
 ### First Launch
 
 1. Open **Wine Selector**
-2. Tap the gear icon (top right) to open **Settings**
-3. Enter your Google AI API key and tap **Save**
-4. Return to the home screen
-5. Select a food category
-6. Tap **Scan Wine List** and photograph a wine list
-7. Wait a few seconds for the recommendation
+2. Select a food category
+3. Tap **Scan Wine List** and grant camera permission when prompted
+4. Photograph a wine list
+5. View the recommendation instantly
 
 ## Building from Source
 
@@ -90,12 +79,6 @@ export ANDROID_HOME="/src/wine-selector/.buildtools/android-sdk"
 
 The output APK will be at `app/build/outputs/apk/debug/app-debug.apk`.
 
-### Clean Build
-
-```bash
-./gradlew clean assembleDebug
-```
-
 ## Project Structure
 
 ```
@@ -105,20 +88,20 @@ wine-selector/
 │   └── src/main/
 │       ├── AndroidManifest.xml       # Permissions: CAMERA, INTERNET
 │       ├── java/com/wineselector/app/
-│       │   ├── MainActivity.kt       # Entry point, camera permission request
-│       │   ├── WineSelectorApp.kt    # Navigation graph and theme setup
+│       │   ├── MainActivity.kt       # Entry point
+│       │   ├── WineSelectorApp.kt    # Screen switching and theme
 │       │   ├── data/
-│       │   │   ├── ClaudeApiService.kt      # Gemini vision API client
-│       │   │   ├── FoodCategory.kt          # Food category enum with emojis
-│       │   │   └── PreferencesRepository.kt # DataStore for API key storage
+│       │   │   ├── FoodCategory.kt          # 12 food categories with emojis
+│       │   │   ├── WineRecommendation.kt    # Result data class
+│       │   │   ├── TextRecognitionService.kt # ML Kit on-device OCR
+│       │   │   └── WinePairingEngine.kt     # 60+ wine profiles with food scores
 │       │   ├── viewmodel/
 │       │   │   └── WineSelectorViewModel.kt # App state and business logic
 │       │   └── ui/
 │       │       ├── screens/
 │       │       │   ├── HomeScreen.kt        # Food picker + scan button
-│       │       │   ├── CameraScreen.kt      # CameraX photo capture
-│       │       │   ├── ResultScreen.kt      # AI recommendation display
-│       │       │   └── SettingsScreen.kt    # API key management
+│       │       │   ├── CameraScreen.kt      # CameraX in-app capture
+│       │       │   └── ResultScreen.kt      # Recommendation display
 │       │       ├── components/
 │       │       │   ├── FoodCategoryPicker.kt       # Food chip grid
 │       │       │   └── WineRecommendationCard.kt   # Recommendation card
@@ -130,7 +113,7 @@ wine-selector/
 │           ├── drawable/            # Launcher icon (wine glass vector)
 │           ├── mipmap-hdpi/         # Adaptive icon definition
 │           ├── values/              # Strings, themes
-│           └── xml/                 # Network security config (HTTPS only)
+│           └── xml/                 # FileProvider paths
 ├── build.gradle.kts                 # Root Gradle config
 ├── settings.gradle.kts              # Project settings
 ├── gradle.properties                # Build properties
@@ -142,63 +125,53 @@ wine-selector/
 
 - **Pattern**: MVVM with Jetpack Compose
 - **State Management**: Kotlin StateFlow in ViewModel
-- **Navigation**: Jetpack Navigation Compose (home → camera → result, home → settings)
-- **Camera**: CameraX with ImageCapture for JPEG output
-- **AI**: Google Gemini 2.0 Flash via REST API (free tier, no billing required)
-- **Networking**: OkHttp3 direct HTTP calls to Google Generative Language API
-- **Storage**: DataStore Preferences for the API key
+- **Screen Navigation**: State-based switching via `rememberSaveable` (no Navigation Compose)
+- **Camera**: CameraX with ImageCapture for instant JPEG capture
+- **OCR**: Google ML Kit Text Recognition (on-device, no API key)
+- **Wine Matching**: Built-in rules engine with 60+ grape/region/style profiles
+- **Image Display**: Coil AsyncImage from file path
 - **Theme**: Material 3 with wine-inspired colors (deep reds, golds, cream)
 
 ## Dependencies
 
 | Library | Version | Purpose |
 |---------|---------|---------|
-| Jetpack Compose BOM | 2024.01.00 | UI framework |
+| Jetpack Compose BOM | 2024.02.00 | UI framework |
 | Material 3 | (BOM) | Design system |
-| Navigation Compose | 2.7.6 | Screen navigation |
-| CameraX | 1.3.1 | Camera capture |
-| OkHttp3 | 4.12.0 | HTTP client |
-| DataStore | 1.0.0 | Local preferences |
+| CameraX | 1.3.1 | In-app camera |
+| ML Kit Text Recognition | 16.0.0 | On-device OCR |
 | Coil | 2.5.0 | Image loading |
 | Lifecycle ViewModel | 2.7.0 | MVVM support |
 
-## API Details
+## Wine Knowledge Base
 
-The app sends wine list photos to Google's Gemini API (`gemini-2.0-flash`) with a structured prompt requesting:
+The app includes a built-in knowledge base covering:
 
-- **WINE** — The recommended wine name from the list
-- **PRICE** — Price if visible on the list
-- **WHY** — 2-3 sentence pairing explanation
-- **RUNNER_UP** — Second-best option
+**Red wines**: Cabernet Sauvignon, Merlot, Pinot Noir, Malbec, Syrah/Shiraz, Zinfandel, Tempranillo, Sangiovese, Nebbiolo, Grenache, Barbera, Primitivo
 
-The image is sent as base64-encoded JPEG via the Generative Language REST API with inline image data.
+**White wines**: Chardonnay, Sauvignon Blanc, Riesling, Pinot Grigio/Gris, Viognier, Gewurztraminer, Gruner Veltliner, Albarino, Muscadet, Chenin Blanc, Semillon
 
-### Free Tier Limits
+**Sparkling**: Champagne, Prosecco, Cava
 
-Google AI Studio's free tier includes:
-- 15 requests per minute
-- 1,500 requests per day
-- No credit card required
+**Dessert**: Moscato, Port, Sauternes, Ice Wine
 
-This is more than enough for personal wine list scanning.
+**Regions/Styles**: Bordeaux, Burgundy, Chianti, Barolo, Barbaresco, Rioja, Cotes du Rhone, Chateauneuf-du-Pape, Sancerre, Chablis, Valpolicella, Amarone, Beaujolais, Montepulciano
+
+**Rosé**: Generic rosé detection
+
+Each entry has food pairing scores for all 12 food categories based on established sommelier pairing principles.
 
 ## Permissions
 
 - **CAMERA** — Required to photograph wine lists
-- **INTERNET** — Required to call the Gemini API
-
-No other permissions are requested. The API key is stored locally on the device only.
+- **INTERNET** — Used by ML Kit for initial model download (first use only; works offline after)
 
 ## Troubleshooting
 
-**"Set your API key in Settings first"** — Tap the gear icon on the home screen and enter a valid Google AI API key from [aistudio.google.com](https://aistudio.google.com/apikey).
-
 **Camera not working** — Make sure you granted camera permission when prompted. You can also enable it in Android Settings > Apps > Wine Selector > Permissions.
 
-**"API error 400"** — The image may be too large or unreadable. Try taking a clearer photo with better lighting.
+**"Could not read any text from the photo"** — The photo may be blurry or poorly lit. Hold the camera steady, ensure good lighting, and make sure the wine list text is in focus.
 
-**"API error 403"** — Your API key may be invalid or restricted. Generate a new one from Google AI Studio.
+**"No match found"** — The app couldn't identify any known wine varieties in the text. This can happen with very unusual wines, heavily stylized fonts, or non-Latin scripts. Try a clearer photo.
 
-**"API error 429"** — Rate limited. Wait a minute and try again (free tier allows 15 requests/minute).
-
-**Blurry results** — Hold the camera steady and make sure the wine list text is in focus before tapping the capture button. Good lighting helps.
+**Blurry results** — Hold the camera steady and make sure the wine list text is in focus before tapping the capture button. Good lighting helps significantly with OCR accuracy.

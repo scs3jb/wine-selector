@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-Android app (Kotlin + Jetpack Compose) that photographs wine lists and uses Google Gemini's free-tier vision API to recommend wine pairings based on food selection.
+Android app (Kotlin + Jetpack Compose) that photographs wine lists and recommends wine pairings based on food selection. Uses on-device ML Kit text recognition + a built-in wine pairing rules engine. No API key, no internet required for core functionality.
 
 ## Build Environment
 
@@ -27,11 +27,22 @@ APK output: `app/build/outputs/apk/debug/app-debug.apk`
 
 ## Key Architecture Decisions
 
-- **No backend server** — Users provide their own Google AI Studio API key (free, no billing), stored locally via DataStore
-- **Google Gemini 2.0 Flash** — Free-tier vision model via REST API, no paid subscription needed
-- **Single Activity** — `MainActivity` hosts a Compose NavHost with 4 routes: `home`, `camera`, `result`, `settings`
-- **Single ViewModel** — `WineSelectorViewModel` holds all app state (food selection, captured image, API result)
-- **Direct API calls** — OkHttp to `generativelanguage.googleapis.com` with base64-encoded JPEG, no Retrofit or generated client
+- **Fully on-device** — No cloud API, no API key, no internet needed for wine analysis
+- **ML Kit Text Recognition** — Google's on-device OCR extracts wine list text from photos (model bundled in APK)
+- **Wine Pairing Rules Engine** — Knowledge base of 60+ grape varieties, regions, and styles with food pairing scores (1-10)
+- **Single Activity** — `MainActivity` hosts Compose UI with state-based screen switching (no Navigation Compose)
+- **Single ViewModel** — `WineSelectorViewModel` holds all app state
+- **In-app CameraX** — Direct photo capture with no confirmation step (tap shutter → instant result)
+- **State-based screens** — Simple `when (currentScreen)` switching via `rememberSaveable`, NOT Navigation Compose (removed due to Compose BOM animation version conflicts)
+
+## Important Gotchas
+
+- **Compose BOM version matters** — BOM `2024.02.00` is required. Earlier versions (e.g., `2024.01.00`) cause `NoSuchMethodError` in `KeyframesSpec` animation classes at runtime when used with certain transitive dependencies
+- **Navigation Compose was removed** — It pulled in incompatible `compose-animation` versions. The app uses simple state-based screen switching instead
+- **CameraX lifecycle** — Must bind to the Activity lifecycle (via `context.findActivity()`), NOT `LocalLifecycleOwner` which returns `NavBackStackEntry` and can be DESTROYED
+- **Camera capture** — Uses file-based `OnImageSavedCallback`, NOT `OnImageCapturedCallback` (which returns YUV data that `BitmapFactory` can't decode)
+- **CameraX 1.3.1** — Do NOT call `.setJpegQuality()` — that method was added in CameraX 1.4.0 and causes `NoSuchMethodError` at runtime
+- **Image display** — Uses Coil `AsyncImage` with file path, NOT in-memory `ByteArray` (which causes OOM on high-res photos)
 
 ## Code Conventions
 
@@ -39,24 +50,33 @@ APK output: `app/build/outputs/apk/debug/app-debug.apk`
 - Material 3 theming with wine-themed colors defined in `ui/theme/Color.kt`
 - `@OptIn` annotations used for experimental Material 3 and Layout APIs
 - State management via `StateFlow` in ViewModel, collected with `collectAsState()` in Composables
-- Navigation routes are plain strings: `"home"`, `"camera"`, `"result"`, `"settings"`
+- Screen names are plain strings: `"home"`, `"camera"`, `"result"`
 
 ## File Layout
 
 ```
 app/src/main/java/com/wineselector/app/
-├── MainActivity.kt              # Activity + camera permission
-├── WineSelectorApp.kt           # NavHost + theme
+├── MainActivity.kt              # Activity entry point
+├── WineSelectorApp.kt           # State-based screen switching + theme
 ├── data/
-│   ├── ClaudeApiService.kt      # Gemini API client (file kept for git history)
-│   ├── FoodCategory.kt          # Add new food categories here
-│   └── PreferencesRepository.kt # Add new settings keys here
+│   ├── FoodCategory.kt          # 12 food categories with emoji icons
+│   ├── WineRecommendation.kt    # Data class for recommendation results
+│   ├── TextRecognitionService.kt # ML Kit on-device OCR wrapper
+│   └── WinePairingEngine.kt     # Rules engine: 60+ grape/region profiles with food scores
 ├── viewmodel/
-│   └── WineSelectorViewModel.kt # Central state management
+│   └── WineSelectorViewModel.kt # Central state: photo capture → OCR → pairing → result
 └── ui/
-    ├── screens/                  # Full-screen composables
-    ├── components/               # Reusable UI pieces
-    └── theme/                    # Colors, typography, theme
+    ├── screens/
+    │   ├── HomeScreen.kt        # Food picker + scan button
+    │   ├── CameraScreen.kt      # CameraX in-app capture (no confirm step)
+    │   └── ResultScreen.kt      # Recommendation display with photo preview
+    ├── components/
+    │   ├── FoodCategoryPicker.kt       # FlowRow of FilterChips
+    │   └── WineRecommendationCard.kt   # Recommendation card UI
+    └── theme/
+        ├── Theme.kt     # Material 3 theme (light/dark)
+        ├── Color.kt     # Wine-themed palette (deep reds, golds, cream)
+        └── Type.kt      # Serif headlines typography
 ```
 
 ## Common Tasks
@@ -71,32 +91,31 @@ STEAK("Steak", "\uD83E\uDD69"),
 
 The food picker grid updates automatically.
 
-### Changing the AI model
+### Adding a new wine/grape to the pairing engine
 
-Edit `data/ClaudeApiService.kt`, change the model in the URL:
+Edit `data/WinePairingEngine.kt`, add an entry to `wineKeywords`:
 
 ```kotlin
-val url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=$apiKey"
+put("new grape", WineProfile(
+    mapOf(FoodCategory.BEEF to 8, FoodCategory.FISH to 3, ...),
+    "Description of why this grape pairs well"
+))
 ```
 
-Available free models: `gemini-2.0-flash`, `gemini-1.5-flash`, `gemini-1.5-pro`
-
-### Modifying the AI prompt
-
-Edit the `prompt` variable in `GeminiApiService.analyzeWineList()`. The response parser expects `WINE:`, `PRICE:`, `WHY:`, and `RUNNER_UP:` fields.
+Keywords are matched case-insensitively against OCR text. Use lowercase.
 
 ### Adding a new screen
 
 1. Create a composable in `ui/screens/`
-2. Add a route in `WineSelectorApp.kt` inside the `NavHost` block
-3. Add navigation calls from other screens
+2. Add a case in `WineSelectorApp.kt` inside the `when (currentScreen)` block
+3. Set `currentScreen = "newscreen"` to navigate
 
-### Adding a new setting
+### Modifying the camera behavior
 
-1. Add a key in `PreferencesRepository.kt`
-2. Add a flow + setter method
-3. Expose it in `WineSelectorViewModel.kt`
-4. Add UI in `SettingsScreen.kt`
+Edit `ui/screens/CameraScreen.kt`. The camera uses CameraX with:
+- `CAPTURE_MODE_MINIMIZE_LATENCY` for fast capture
+- File-based output to `cacheDir/wine_list.jpg`
+- Activity lifecycle binding via `context.findActivity()`
 
 ## Emulator Testing
 
@@ -105,16 +124,22 @@ This environment lacks KVM hardware acceleration, so the Android emulator cannot
 - Transfer the APK to a physical device, or
 - Build locally on a machine with KVM support and use the emulator
 
-An AVD named `wine_test` (Pixel 6, Android 34, Google APIs x86_64) is already configured if KVM becomes available.
-
 ## Dependencies
 
 Managed in `app/build.gradle.kts`. Key dependency versions:
 
-- Compose BOM: `2024.01.00`
+- Compose BOM: `2024.02.00` (DO NOT downgrade — causes animation crashes)
 - CameraX: `1.3.1`
-- OkHttp: `4.12.0`
-- Navigation: `2.7.6`
+- ML Kit Text Recognition: `16.0.0`
+- Coil: `2.5.0`
 - Kotlin: `1.9.22`
 - Compose Compiler: `1.5.8`
 - AGP: `8.2.2`
+
+## Processing Pipeline
+
+1. **Photo capture** — CameraX saves JPEG to `cacheDir/wine_list.jpg`
+2. **OCR** — `TextRecognitionService` uses ML Kit to extract all text from the image
+3. **Matching** — `WinePairingEngine.recommendWines()` scans each text line for known wine keywords
+4. **Scoring** — Each matched wine is scored 1-10 for the selected food category
+5. **Result** — Top match displayed with name, price (if detected), pairing reasoning, and runner-up
