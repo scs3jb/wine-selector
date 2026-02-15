@@ -14,23 +14,37 @@ class TextRecognitionService {
 
     /**
      * Extract text from a photo file using ML Kit on-device text recognition.
+     * Returns an OcrResult with the full text, per-line bounding boxes, and image dimensions.
      */
-    suspend fun extractText(photoFile: File, context: android.content.Context): Result<String> {
+    suspend fun extractText(photoFile: File, context: android.content.Context): Result<OcrResult> {
         return try {
             val image = InputImage.fromFilePath(context, Uri.fromFile(photoFile))
-            val text = suspendCancellableCoroutine { cont ->
+            val ocrResult = suspendCancellableCoroutine { cont ->
                 recognizer.process(image)
                     .addOnSuccessListener { result ->
-                        cont.resume(result.text)
+                        val ocrLines = mutableListOf<OcrLine>()
+                        for (block in result.textBlocks) {
+                            for (line in block.lines) {
+                                ocrLines.add(OcrLine(line.text, line.boundingBox))
+                            }
+                        }
+                        cont.resume(
+                            OcrResult(
+                                fullText = result.text,
+                                lines = ocrLines,
+                                imageWidth = image.width,
+                                imageHeight = image.height
+                            )
+                        )
                     }
-                    .addOnFailureListener { e ->
-                        cont.resume("")
+                    .addOnFailureListener { _ ->
+                        cont.resume(OcrResult("", emptyList(), 0, 0))
                     }
             }
-            if (text.isBlank()) {
+            if (ocrResult.fullText.isBlank()) {
                 Result.failure(Exception("Could not read any text from the photo. Try taking a clearer, well-lit photo of the wine list."))
             } else {
-                Result.success(text)
+                Result.success(ocrResult)
             }
         } catch (e: Exception) {
             Result.failure(Exception("Failed to process image: ${e.message}"))
