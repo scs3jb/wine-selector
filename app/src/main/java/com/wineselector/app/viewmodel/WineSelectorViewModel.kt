@@ -234,7 +234,7 @@ class WineSelectorViewModel(application: Application) : AndroidViewModel(applica
                         _ocrImageSize.value = Pair(ocrResult.imageWidth, ocrResult.imageHeight)
 
                         val scoredWines = winePairingEngine.recommendWines(
-                            ocrResult.fullText, category, _winePreferences.value
+                            ocrResult.spatiallyMergedText(), category, _winePreferences.value
                         )
                         val rec = winePairingEngine.buildRecommendation(
                             scoredWines, category, ocrResult.fullText
@@ -264,15 +264,20 @@ class WineSelectorViewModel(application: Application) : AndroidViewModel(applica
         val highlights = mutableListOf<WineHighlight>()
         val usedLineIndices = mutableSetOf<Int>()
 
-        scoredWines.take(5).forEachIndexed { index, scored ->
-            val tier = if (index == 0) HighlightTier.TOP_PICK else HighlightTier.ALTERNATIVE
-            val originalLower = scored.originalText.lowercase()
+        scoredWines.take(4).forEachIndexed { index, scored ->
+            val tier = when (index) {
+                0 -> HighlightTier.GOLD
+                1 -> HighlightTier.SILVER
+                2 -> HighlightTier.BRONZE
+                else -> HighlightTier.RED
+            }
+            val matchText = (scored.displayName ?: scored.originalText).lowercase()
             val matchedBoxes = mutableListOf<Rect>()
 
             for ((lineIdx, ocrLine) in ocrResult.lines.withIndex()) {
                 if (lineIdx in usedLineIndices) continue
                 val lineLower = ocrLine.text.trim().lowercase()
-                if (lineLower.length > 2 && originalLower.contains(lineLower)) {
+                if (lineLower.length > 4 && matchText.contains(lineLower)) {
                     ocrLine.boundingBox?.let {
                         matchedBoxes.add(it)
                         usedLineIndices.add(lineIdx)

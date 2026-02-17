@@ -754,6 +754,26 @@ class WinePairingEngineTest {
     }
 
     @Test
+    fun `buildRecommendation - alternatives capped at 3`() {
+        // Use a wine list with many beef-friendly wines to ensure > 4 scored results
+        val manyWinesList = """
+            Cabernet Sauvignon 2020 $55
+            Malbec Reserve 2021 $48
+            Merlot 2019 $42
+            Syrah 2020 $40
+            Tempranillo 2019 $38
+        """.trimIndent()
+        val results = engine.recommendWines(manyWinesList, FoodCategory.BEEF)
+        assertTrue("Should find more than 4 wines to test cap", results.size > 4)
+        val rec = engine.buildRecommendation(results, FoodCategory.BEEF, manyWinesList)
+        assertTrue("Should have alternatives", rec.alternatives.isNotEmpty())
+        assertTrue(
+            "Alternatives should be at most 3, got: ${rec.alternatives.size}",
+            rec.alternatives.size <= 3
+        )
+    }
+
+    @Test
     fun `buildRecommendation - should include alternatives`() {
         val results = engineWithXWines.recommendWines(italianWineList, FoodCategory.BEEF)
         val rec = engineWithXWines.buildRecommendation(results, FoodCategory.BEEF, italianWineList)

@@ -65,7 +65,10 @@ APK output: `app/build/outputs/apk/debug/app-debug.apk`
 
 - **Fully on-device** — No cloud API, no API key, no internet needed for wine analysis
 - **ML Kit Text Recognition** — Google's on-device OCR extracts wine list text from photos (model bundled in APK)
-- **Wine Pairing Rules Engine** — Knowledge base of 60+ grape varieties, regions, and styles with food pairing scores (1-10)
+- **Wine Pairing Rules Engine** — Knowledge base of 60+ grape varieties, regions, and styles with food pairing scores (1-10). Two-pass architecture: Pass 1 matches against X-Wines database, Pass 2 uses keyword fallback with section context inheritance
+- **Keyword-base + harmonization bonus scoring** — Wine scores are anchored to keyword/grape scores from the rules engine. X-Wines harmonization adds a +2 bonus (capped at 10) rather than overriding the base score, ensuring consistent rankings
+- **Spatial OCR merging** — `OcrResult.spatiallyMergedText()` groups OCR lines by vertical overlap into visual rows (sorted left-to-right), fixing two-column menu layouts where producer names and descriptions are read as separate text blocks
+- **Comprehensive price detection** — Detects currency symbols ($/€/£), glass/bottle format (13/41), and bare trailing numbers. Used consistently across entry splitting, coalescing, filtering, and display name cleaning via `lineHasPrice()`
 - **X-Wines Dataset Integration** — Three-tier strategy: bundled 100-wine fallback, downloadable Slim (1K wines/150K ratings), or Full (100K wines/21M ratings). User chooses on first boot
 - **Performance-optimized matching** — XWinesDatabase builds HashMap indexes after loading for O(1) word lookups instead of O(n) linear scan. Matching completes in <1ms per query even with 100K wines
 - **Single Activity** — `MainActivity` hosts Compose UI with state-based screen switching (no Navigation Compose)
@@ -81,6 +84,8 @@ APK output: `app/build/outputs/apk/debug/app-debug.apk`
 - **Camera capture** — Uses file-based `OnImageSavedCallback`, NOT `OnImageCapturedCallback` (which returns YUV data that `BitmapFactory` can't decode)
 - **CameraX 1.3.1** — Do NOT call `.setJpegQuality()` — that method was added in CameraX 1.4.0 and causes `NoSuchMethodError` at runtime
 - **Image display** — Uses Coil `AsyncImage` with file path, NOT in-memory `ByteArray` (which causes OOM on high-res photos)
+- **Price detection consistency** — All price detection in `WinePairingEngine` must use `lineHasPrice()` (not `PRICE_PATTERN` alone), which checks currency symbols, glass/bottle format, and bare trailing numbers. Using `PRICE_PATTERN` alone misses bare number prices (e.g., "7000") and causes entry splitting failures where wines merge into mega-entries and bypass the price filter
+- **Pass 1 scoring** — Do NOT use flat scores (e.g., 8-10) for X-Wines harmonization matches. This overrides keyword differentiation and makes rankings inconsistent. Always compute a keyword/grape base score first, then add harmonization as a +2 bonus
 
 ## Code Conventions
 
@@ -99,8 +104,10 @@ app/src/main/java/com/wineselector/app/
 ├── data/
 │   ├── FoodCategory.kt          # 12 food categories with emoji icons
 │   ├── WineRecommendation.kt    # Data class for recommendation results (includes optional XWineEntry)
+│   ├── OcrResult.kt             # OCR data classes with spatial line merging for two-column menus
 │   ├── TextRecognitionService.kt # ML Kit on-device OCR wrapper
-│   ├── WinePairingEngine.kt     # Rules engine: 60+ grape/region profiles with food scores
+│   ├── WinePairingEngine.kt     # Two-pass rules engine: X-Wines DB match → keyword fallback, 60+ grape/region profiles
+│   ├── WinePreferences.kt       # User preferences (max price, ignored grapes, wine type filter) with multi-format price parsing
 │   ├── XWinesDatabase.kt        # X-Wines CSV loader with HashMap indexes for fast matching
 │   └── XWinesDownloader.kt      # Downloads zip datasets, extracts CSVs, manages cache and user choice
 ├── viewmodel/
@@ -142,7 +149,7 @@ put("new grape", WineProfile(
 ))
 ```
 
-Keywords are matched case-insensitively against OCR text. Use lowercase.
+Keywords are matched case-insensitively against OCR text. Use lowercase. These keywords are used in both passes: Pass 2 matches them directly against OCR text, and Pass 1 uses them via `inferScoreFromGrapes()` to score X-Wines entries by their grape varieties.
 
 ### Adding a new screen
 
@@ -179,11 +186,15 @@ Managed in `app/build.gradle.kts`. Key dependency versions:
 ## Processing Pipeline
 
 1. **Photo capture** — CameraX saves JPEG to `cacheDir/wine_list.jpg`
-2. **OCR** — `TextRecognitionService` uses ML Kit to extract all text from the image
-3. **Matching** — `WinePairingEngine.recommendWines()` scans each text line for known wine keywords
-4. **X-Wines lookup** — Each matched wine is cross-referenced against the X-Wines database using indexed name words / grape variety lookup
-5. **Scoring** — Each matched wine is scored 1-10 for the selected food category; +1 bonus if X-Wines confirms the food pairing (capped at 10)
-6. **Result** — Top match displayed with name, price (if detected), pairing reasoning, runner-up, and X-Wines metadata (rating, grapes, body, acidity, region, food harmonizations) when available
+2. **OCR** — `TextRecognitionService` uses ML Kit to extract text with per-line bounding boxes
+3. **Spatial merge** — `OcrResult.spatiallyMergedText()` groups lines by vertical overlap into visual rows, fixing two-column layouts
+4. **Entry coalescing** — `coalesceEntries()` groups consecutive OCR lines into wine entries using heuristics (vintage detection, price detection, section headers, entry boundary splitting via `shouldSplitBefore`)
+5. **Two-pass matching**:
+   - **Pass 1 (X-Wines)** — Matches entries against the X-Wines database by name. Computes a stable base score from keyword/grape inference, then adds +2 harmonization bonus if X-Wines confirms the food pairing (capped at 10). Wines without keyword matches get a modest rating-based score (3-5)
+   - **Pass 2 (Keywords)** — Fallback for entries not matched in Pass 1. Scans for known grape/region keywords in OCR text, with section context inheritance (e.g., wines under a "Champagne" header inherit that keyword). Falls back to X-Wines grape inference if no keyword match
+6. **Preference filtering** — Filters by max price (supports $/€/£ symbols, glass/bottle format like 13/41, and bare trailing numbers), ignored grapes, and allowed wine types
+7. **Ranking** — Sorted by score (desc) → X-Wines average rating (desc) → alphabetical display name (asc) for deterministic tiebreaking
+8. **Result** — Top match displayed with name, price (if detected), pairing reasoning, runner-up, and X-Wines metadata (rating, grapes, body, acidity, region, food harmonizations) when available
 
 ## X-Wines Dataset
 

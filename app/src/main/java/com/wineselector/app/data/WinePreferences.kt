@@ -36,10 +36,32 @@ data class WinePreferences(
         const val DEFAULT_MAX_PRICE = 60
 
         private fun extractNumericPrice(text: String): Double? {
-            val regex = Regex("""[\$€£]\s*(\d+\.?\d*)|(\d+\.?\d*)\s*[\$€£]|(\d+\.\d{2})""")
-            val match = regex.find(text) ?: return null
-            val numStr = match.groupValues.drop(1).firstOrNull { it.isNotEmpty() } ?: return null
-            return numStr.toDoubleOrNull()
+            // Currency symbol patterns ($/€/£)
+            val currencyRegex = Regex("""[\$€£]\s*(\d+\.?\d*)|(\d+\.?\d*)\s*[\$€£]|(\d+\.\d{2})""")
+            val currencyMatch = currencyRegex.find(text)
+            if (currencyMatch != null) {
+                val numStr = currencyMatch.groupValues.drop(1).firstOrNull { it.isNotEmpty() }
+                if (numStr != null) return numStr.toDoubleOrNull()
+            }
+
+            // Glass/bottle format — "13/41" — use higher number (bottle price)
+            val gbRegex = Regex("""\b(\d{1,4})/(\d{1,4})\b""")
+            val gbMatch = gbRegex.find(text)
+            if (gbMatch != null) {
+                val prices = listOf(gbMatch.groupValues[1], gbMatch.groupValues[2])
+                    .mapNotNull { it.toDoubleOrNull() }
+                if (prices.isNotEmpty()) return prices.max()
+            }
+
+            // Bare trailing number (not a year)
+            val bareRegex = Regex("""(?:^|\s)(\d{2,5})\s*$""")
+            val bareMatch = bareRegex.find(text)
+            if (bareMatch != null) {
+                val num = bareMatch.groupValues[1].toIntOrNull()
+                if (num != null && num !in 1900..2099) return num.toDouble()
+            }
+
+            return null
         }
     }
 }

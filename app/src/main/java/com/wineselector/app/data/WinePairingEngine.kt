@@ -380,6 +380,31 @@ class WinePairingEngine(private val xWinesDb: XWinesDatabase? = null) {
         private val PRICE_PATTERN = Regex("""\$\s*\d|\d+\s*€|€\s*\d|\d+\s*£|£\s*\d|\d+\.\d{2}""")
         private val VOLUME_PATTERN = Regex("""\b\d+\s*ml\b""", RegexOption.IGNORE_CASE)
 
+        // Glass/bottle price format — "13/41", "28/104"
+        private val GLASS_BOTTLE_PATTERN = Regex("""\b\d{1,4}/\d{1,4}\b""")
+
+        // Bare trailing number — a 2-5 digit number at the end of a line,
+        // used to detect prices without currency symbols (e.g., "130", "600").
+        private val BARE_TRAILING_NUMBER = Regex("""(?:^|\s)(\d{2,5})\s*$""")
+
+        fun hasBareTrailingPrice(line: String): Boolean {
+            val match = BARE_TRAILING_NUMBER.find(line) ?: return false
+            val num = match.groupValues[1].toIntOrNull() ?: return false
+            return num !in 1900..2099 // exclude vintage years
+        }
+
+        /**
+         * Comprehensive price detection — checks currency symbols, glass/bottle
+         * format, and bare trailing numbers. Use this instead of PRICE_PATTERN
+         * alone when you need to detect prices in all formats.
+         */
+        fun lineHasPrice(line: String): Boolean {
+            if (PRICE_PATTERN.containsMatchIn(line)) return true
+            if (GLASS_BOTTLE_PATTERN.containsMatchIn(line)) return true
+            if (hasBareTrailingPrice(line)) return true
+            return false
+        }
+
         // Continuation suffixes — "Pinot Noir cont.", "Reds (continued)", etc.
         private val CONTINUATION_PATTERN = Regex(
             """(?i)\b(?:cont\.?|cont'd|continued)\s*\.?\s*$|\((?:cont\.?|cont'd|continued)\)\s*$"""
@@ -413,7 +438,7 @@ class WinePairingEngine(private val xWinesDb: XWinesDatabase? = null) {
 
         // Lines with a vintage year, price, or volume are wine entries
         if (VINTAGE_PATTERN.containsMatchIn(line)) return false
-        if (PRICE_PATTERN.containsMatchIn(line)) return false
+        if (lineHasPrice(line)) return false
         if (VOLUME_PATTERN.containsMatchIn(line)) return false
 
         // Continuation headers: "Pinot Noir cont.", "Cabernet Sauvignon (continued)", etc.
@@ -447,7 +472,7 @@ class WinePairingEngine(private val xWinesDb: XWinesDatabase? = null) {
     private fun isBareKeywordLine(line: String): Boolean {
         val lower = line.lowercase().trim()
         if (VINTAGE_PATTERN.containsMatchIn(line)) return false
-        if (PRICE_PATTERN.containsMatchIn(line)) return false
+        if (lineHasPrice(line)) return false
         if (VOLUME_PATTERN.containsMatchIn(line)) return false
 
         val wordCount = lower.split(Regex("\\s+")).filter { it.isNotEmpty() }.size
@@ -474,7 +499,7 @@ class WinePairingEngine(private val xWinesDb: XWinesDatabase? = null) {
      */
     private fun looksLikeWineEntry(line: String): Boolean {
         // Lines that are price/serving info — never wine names
-        if (PRICE_LINE_PATTERN.containsMatchIn(line) && PRICE_PATTERN.containsMatchIn(line)) {
+        if (PRICE_LINE_PATTERN.containsMatchIn(line) && lineHasPrice(line)) {
             return false
         }
         // Has a vintage year — almost certainly a wine entry
@@ -497,7 +522,7 @@ class WinePairingEngine(private val xWinesDb: XWinesDatabase? = null) {
     private fun isBareKeywordEntry(entry: WineEntry): Boolean {
         val text = entry.combinedText
         // Has price, vintage, NV, or volume → not bare
-        if (PRICE_PATTERN.containsMatchIn(text)) return false
+        if (lineHasPrice(text)) return false
         if (VINTAGE_PATTERN.containsMatchIn(text)) return false
         if (text.contains(Regex("""\bNV\b"""))) return false
         if (VOLUME_PATTERN.containsMatchIn(text)) return false
@@ -549,7 +574,7 @@ class WinePairingEngine(private val xWinesDb: XWinesDatabase? = null) {
      */
     private fun looksLikeNewWineStart(line: String): Boolean {
         // Price-only or serving-only lines don't start entries
-        if (PRICE_LINE_PATTERN.containsMatchIn(line) && PRICE_PATTERN.containsMatchIn(line)) {
+        if (PRICE_LINE_PATTERN.containsMatchIn(line) && lineHasPrice(line)) {
             return false
         }
         // Lines that are just a price (e.g., "$55") don't start entries
@@ -559,8 +584,12 @@ class WinePairingEngine(private val xWinesDb: XWinesDatabase? = null) {
         if (VINTAGE_PATTERN.containsMatchIn(line)) return true
 
         // Has a price AND some text — likely a self-contained wine line
-        if (PRICE_PATTERN.containsMatchIn(line)) {
-            val textWithoutPrice = line.replace(PRICE_PATTERN, "").trim()
+        if (lineHasPrice(line)) {
+            val textWithoutPrice = line
+                .replace(PRICE_PATTERN, "")
+                .replace(GLASS_BOTTLE_PATTERN, "")
+                .replace(BARE_TRAILING_NUMBER, "")
+                .trim()
             if (textWithoutPrice.length > 3) return true
         }
 
@@ -585,7 +614,7 @@ class WinePairingEngine(private val xWinesDb: XWinesDatabase? = null) {
     private fun shouldSplitBefore(currentLines: List<String>, nextLine: String): Boolean {
         if (currentLines.isEmpty()) return false
 
-        val prevHasPrice = currentLines.any { PRICE_PATTERN.containsMatchIn(it) }
+        val prevHasPrice = currentLines.any { lineHasPrice(it) }
         val prevHasVintage = currentLines.any { VINTAGE_PATTERN.containsMatchIn(it) }
 
         // If previous group has a price and this line looks like a new wine, split
@@ -618,10 +647,13 @@ class WinePairingEngine(private val xWinesDb: XWinesDatabase? = null) {
             if (currentLines.isEmpty()) return
             val combined = currentLines.joinToString(" ")
             // Display name = first non-price line (the wine/producer name)
-            val nameLine = currentLines.firstOrNull { !PRICE_LINE_PATTERN.containsMatchIn(it) || !PRICE_PATTERN.containsMatchIn(it) }
+            val nameLine = currentLines.firstOrNull { !PRICE_LINE_PATTERN.containsMatchIn(it) || !lineHasPrice(it) }
                 ?: currentLines.first()
-            // Find price from any line in the group
+            // Find price from any line in the group — try currency patterns
+            // first, then glass/bottle format, then bare trailing numbers
             val priceText = currentLines.firstOrNull { PRICE_PATTERN.containsMatchIn(it) }
+                ?: currentLines.firstOrNull { GLASS_BOTTLE_PATTERN.containsMatchIn(it) }
+                ?: currentLines.lastOrNull { hasBareTrailingPrice(it) }
             result.add(Pair(
                 WineEntry(
                     lines = currentLines.toList(),
@@ -686,7 +718,7 @@ class WinePairingEngine(private val xWinesDb: XWinesDatabase? = null) {
         val xWinesMatchedKeys = mutableSetOf<String>()
 
         if (xWinesDb != null) {
-            for ((entry, _) in entries) {
+            for ((entry, sectionKw) in entries) {
                 val matchResult = xWinesDb.findMatchWithVintage(entry.combinedText) ?: continue
                 val xEntry = matchResult.entry
 
@@ -696,17 +728,84 @@ class WinePairingEngine(private val xWinesDb: XWinesDatabase? = null) {
                 if (!preferences.acceptsPrice(entry.priceText)) continue
 
                 val harmonizes = xWinesDb.harmonizesWithFood(xEntry, food)
-                if (!harmonizes) continue // Skip non-harmonizing X-Wines matches
+                val grapeStr = if (xEntry.grapes.isNotEmpty()) xEntry.grapes.joinToString(", ") else xEntry.type
 
-                val score = when {
-                    xEntry.averageRating != null && xEntry.averageRating >= 4.0f -> 10
-                    xEntry.averageRating != null && xEntry.averageRating >= 3.5f -> 9
-                    else -> 8
+                // Compute stable base score from grape inference, keywords,
+                // and section context — same sources Pass 2 would use.
+                val grapeInference = inferScoreFromGrapes(xEntry.grapes, food)
+                val grapeScore = grapeInference?.first ?: 0
+
+                val entryLower = entry.combinedText.lowercase()
+                var keywordScore = 0
+                var keywordReason = ""
+                for ((keyword, profile) in wineKeywords) {
+                    if (entryLower.contains(keyword)) {
+                        if (profile.type != null && !preferences.allowedTypes.contains(profile.type)) continue
+                        val s = profile.scores[food] ?: 0
+                        if (s > keywordScore) {
+                            keywordScore = s
+                            keywordReason = profile.description
+                        }
+                    }
                 }
 
-                val grapeStr = if (xEntry.grapes.isNotEmpty()) xEntry.grapes.joinToString(", ") else xEntry.type
-                val reason = "$grapeStr from ${xEntry.regionName}, ${xEntry.country} \u2014 " +
-                    "database confirms excellent pairing"
+                if (keywordScore == 0 && sectionKw != null) {
+                    val profile = wineKeywords[sectionKw]
+                    if (profile != null && (profile.type == null || preferences.allowedTypes.contains(profile.type))) {
+                        val s = profile.scores[food] ?: 0
+                        if (s > 0) {
+                            keywordScore = s
+                            keywordReason = profile.description
+                        }
+                    }
+                }
+
+                val baseScore: Int
+                val baseReason: String
+                when {
+                    grapeScore >= keywordScore && grapeScore > 0 -> {
+                        baseScore = grapeScore
+                        baseReason = grapeInference!!.second
+                    }
+                    keywordScore > 0 -> {
+                        baseScore = keywordScore
+                        baseReason = keywordReason
+                    }
+                    else -> {
+                        baseScore = 0
+                        baseReason = ""
+                    }
+                }
+
+                // Apply harmonization as a bonus on top of the stable base,
+                // so rankings are anchored by keyword scores (deterministic)
+                // and X-Wines only fine-tunes.
+                val score: Int
+                val reason: String
+                if (harmonizes && baseScore > 0) {
+                    score = minOf(baseScore + 2, 10)
+                    reason = baseReason
+                } else if (harmonizes) {
+                    // No keyword/grape base — fall back to X-Wines rating
+                    score = when {
+                        xEntry.averageRating != null && xEntry.averageRating >= 4.0f -> 8
+                        xEntry.averageRating != null && xEntry.averageRating >= 3.5f -> 7
+                        else -> 6
+                    }
+                    reason = "$grapeStr from ${xEntry.regionName}, ${xEntry.country} \u2014 " +
+                        "database confirms food pairing"
+                } else if (baseScore > 0) {
+                    score = baseScore
+                    reason = baseReason
+                } else {
+                    score = when {
+                        xEntry.averageRating != null && xEntry.averageRating >= 4.0f -> 5
+                        xEntry.averageRating != null && xEntry.averageRating >= 3.5f -> 4
+                        else -> 3
+                    }
+                    reason = "$grapeStr from ${xEntry.regionName}, ${xEntry.country} \u2014 " +
+                        "pairing unconfirmed, but a highly rated wine"
+                }
 
                 val entryKey = entry.combinedText.lowercase().replace(Regex("[^a-z]"), "")
                 xWinesMatchedKeys.add(entryKey)
@@ -774,6 +873,20 @@ class WinePairingEngine(private val xWinesDb: XWinesDatabase? = null) {
                 }
             }
 
+            // X-Wines grape fallback — when neither keyword nor section context matched,
+            // try identifying the wine via X-Wines and infer score from its grapes
+            if (bestScore == 0 && xWinesDb != null) {
+                val xMatch = xWinesDb.findMatch(entry.combinedText)
+                if (xMatch != null && preferences.acceptsGrapes(xMatch.grapes) &&
+                    preferences.acceptsType(xMatch.type)) {
+                    val grapeInference = inferScoreFromGrapes(xMatch.grapes, food)
+                    if (grapeInference != null) {
+                        bestScore = grapeInference.first
+                        bestReason = grapeInference.second
+                    }
+                }
+            }
+
             if (bestScore > 0) {
                 // Still do X-Wines lookup for enrichment data (but scoring is keyword-based)
                 var xMatch = xWinesDb?.findMatch(entry.combinedText)
@@ -807,7 +920,11 @@ class WinePairingEngine(private val xWinesDb: XWinesDatabase? = null) {
         }
 
         return scored
-            .sortedByDescending { it.score }
+            .sortedWith(
+                compareByDescending<ScoredWine> { it.score }
+                    .thenByDescending { it.xWinesMatch?.averageRating ?: 0f }
+                    .thenBy { (it.displayName ?: it.originalText).lowercase() }
+            )
             .distinctBy { it.originalText.lowercase().replace(Regex("[^a-z]"), "") }
     }
 
@@ -834,7 +951,7 @@ class WinePairingEngine(private val xWinesDb: XWinesDatabase? = null) {
         val price = extractPrice(top.priceText ?: top.fullEntryText ?: top.originalText)
 
         // Build alternatives from positions 1..min(4, size-1)
-        val alts = scoredWines.drop(1).take(4).map { scored ->
+        val alts = scoredWines.drop(1).take(3).map { scored ->
             WineAlternative(
                 wineName = scored.displayName ?: scored.originalText,
                 price = extractPrice(scored.priceText ?: scored.fullEntryText ?: scored.originalText),
@@ -902,7 +1019,7 @@ class WinePairingEngine(private val xWinesDb: XWinesDatabase? = null) {
         // Second pass: first line with a vintage year that isn't just a price
         for (line in lines) {
             if (VINTAGE_PATTERN.containsMatchIn(line)) {
-                val isPriceOnly = PRICE_LINE_PATTERN.containsMatchIn(line) && PRICE_PATTERN.containsMatchIn(line)
+                val isPriceOnly = PRICE_LINE_PATTERN.containsMatchIn(line) && lineHasPrice(line)
                 if (!isPriceOnly) {
                     return cleanDisplayName(line)
                 }
@@ -925,15 +1042,53 @@ class WinePairingEngine(private val xWinesDb: XWinesDatabase? = null) {
      * Clean a line for display — strip trailing price info and trim.
      */
     private fun cleanDisplayName(line: String): String {
-        // Remove trailing price patterns like "$55" or "| Bottle $55"
-        return line.replace(Regex("""\s*\|?\s*(?:Glass|Bottle|btl)\s*\$\s*\d+.*$""", RegexOption.IGNORE_CASE), "")
-            .replace(Regex("""\s*\$\s*\d+\.?\d*\s*$"""), "")
+        // Remove trailing price patterns like "$55", "| Bottle $55", "13/41", or bare "130"
+        return line.replace(Regex("""\s*\|?\s*(?:Glass|Bottle|btl)\s*[\$€£]?\s*\d+.*$""", RegexOption.IGNORE_CASE), "")
+            .replace(Regex("""\s*[\$€£]\s*\d+\.?\d*\s*$"""), "")
+            .replace(Regex("""\s+\d{1,4}/\d{1,4}\s*$"""), "") // glass/bottle
+            .replace(Regex("""\s+(\d{2,5})\s*$""")) { match ->
+                val num = match.groupValues[1].toIntOrNull()
+                if (num != null && num !in 1900..2099) "" else match.value // keep years
+            }
             .trim()
             .ifEmpty { line.trim() }
     }
 
+    /**
+     * Given grape names from an X-Wines entry, look them up in the keyword map
+     * and return the best (score, reason) pair. Bridges X-Wines grape data to
+     * the keyword-based food pairing scores.
+     */
+    private fun inferScoreFromGrapes(grapes: List<String>, food: FoodCategory): Pair<Int, String>? {
+        var bestScore = 0
+        var bestReason = ""
+        for (grape in grapes) {
+            val key = grape.lowercase()
+            val profile = wineKeywords[key] ?: continue
+            val score = profile.scores[food] ?: 0
+            if (score > bestScore) {
+                bestScore = score
+                bestReason = profile.description
+            }
+        }
+        return if (bestScore > 0) Pair(bestScore, bestReason) else null
+    }
+
     private fun extractPrice(text: String): String? {
-        val priceRegex = Regex("""\$\s*\d+\.?\d*|\d+\.?\d*\s*€|€\s*\d+\.?\d*|\d+\.?\d*\s*£|£\s*\d+\.?\d*|\d+\.\d{2}""")
-        return priceRegex.find(text)?.value
+        // Currency symbol patterns ($/€/£)
+        val currencyRegex = Regex("""\$\s*\d+\.?\d*|\d+\.?\d*\s*€|€\s*\d+\.?\d*|\d+\.?\d*\s*£|£\s*\d+\.?\d*|\d+\.\d{2}""")
+        currencyRegex.find(text)?.let { return it.value }
+
+        // Glass/bottle format — "13/41"
+        GLASS_BOTTLE_PATTERN.find(text)?.let { return it.value }
+
+        // Bare trailing number (not a year)
+        val bareMatch = BARE_TRAILING_NUMBER.find(text)
+        if (bareMatch != null) {
+            val num = bareMatch.groupValues[1].toIntOrNull()
+            if (num != null && num !in 1900..2099) return bareMatch.groupValues[1]
+        }
+
+        return null
     }
 }

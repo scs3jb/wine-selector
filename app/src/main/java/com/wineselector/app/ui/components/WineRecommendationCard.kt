@@ -1,7 +1,9 @@
 package com.wineselector.app.ui.components
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
@@ -12,6 +14,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
@@ -31,9 +34,13 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import com.wineselector.app.data.HighlightTier
 import com.wineselector.app.data.WineAlternative
 import com.wineselector.app.data.WineRecommendation
 import com.wineselector.app.data.XWineEntry
@@ -55,6 +62,8 @@ fun WineRecommendationCard(
     ) {
         Column(modifier = Modifier.padding(20.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
+                TierDot(tier = HighlightTier.GOLD, size = 14.dp)
+                Spacer(modifier = Modifier.width(6.dp))
                 Icon(
                     imageVector = Icons.Default.Star,
                     contentDescription = null,
@@ -135,8 +144,14 @@ fun WineRecommendationCard(
                 Spacer(modifier = Modifier.height(8.dp))
 
                 recommendation.alternatives.forEachIndexed { index, alt ->
+                    val altTier = when (index) {
+                        0 -> HighlightTier.SILVER
+                        1 -> HighlightTier.BRONZE
+                        else -> HighlightTier.RED
+                    }
                     AlternativeWineRow(
                         alternative = alt,
+                        highlightTier = altTier,
                         isExpanded = expandedAlternativeIndex == index,
                         onToggleExpand = {
                             expandedAlternativeIndex = if (expandedAlternativeIndex == index) -1 else index
@@ -262,6 +277,7 @@ private fun XWinesDetails(
 @Composable
 private fun AlternativeWineRow(
     alternative: WineAlternative,
+    highlightTier: HighlightTier,
     isExpanded: Boolean,
     onToggleExpand: () -> Unit
 ) {
@@ -279,6 +295,8 @@ private fun AlternativeWineRow(
                 verticalAlignment = Alignment.CenterVertically,
                 modifier = Modifier.fillMaxWidth()
             ) {
+                TierDot(tier = highlightTier, size = 10.dp)
+                Spacer(modifier = Modifier.width(8.dp))
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
                         text = alternative.wineName,
@@ -335,4 +353,22 @@ private fun AlternativeWineRow(
             }
         }
     }
+}
+
+/** Maps highlight tier to its full-opacity border color (matches the photo overlay). */
+private fun tierIndicatorColor(tier: HighlightTier): Color = when (tier) {
+    HighlightTier.GOLD -> Color(0xFFD4A843)
+    HighlightTier.SILVER -> Color(0xFFA8A8A8)
+    HighlightTier.BRONZE -> Color(0xFFCD7F32)
+    HighlightTier.RED -> Color(0xFFA35D67)
+}
+
+@Composable
+private fun TierDot(tier: HighlightTier, size: Dp) {
+    Box(
+        modifier = Modifier
+            .size(size)
+            .clip(CircleShape)
+            .background(tierIndicatorColor(tier))
+    )
 }
