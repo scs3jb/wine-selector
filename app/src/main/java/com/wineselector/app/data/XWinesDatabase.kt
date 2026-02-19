@@ -118,7 +118,7 @@ class XWinesDatabase {
 
     companion object {
         private const val BINARY_CACHE_NAME = "xwines.bin"
-        private const val BINARY_VERSION: Int = 2
+        private const val BINARY_VERSION: Int = 3
 
         private val VINTAGE_REGEX = Regex("""\b(19|20)\d{2}\b""")
 
@@ -306,8 +306,8 @@ class XWinesDatabase {
         val nameIdx = HashMap<String, MutableList<IndexEntry>>(wines.size * 3)
         val wordCounts = HashMap<XWineEntry, Int>(wines.size)
         for (wine in wines) {
-            val words = wine.wineName.lowercase()
-                .replace(Regex("[^a-zà-ÿ\\s]"), " ")
+            val words = TextNormalizer.normalizeForMatching(wine.wineName)
+                .replace(Regex("[^a-z\\s]"), " ")
                 .split(Regex("\\s+"))
                 .filter { it.length > 2 && it !in STOP_WORDS }
             val entry = IndexEntry(wine, words.size)
@@ -319,11 +319,11 @@ class XWinesDatabase {
         nameWordIndex = nameIdx
         wineWordCount = wordCounts
 
-        // Grape index: map each grape name (lowercase) -> first wine that has it
+        // Grape index: map each grape name (normalized) -> first wine that has it
         val gIdx = HashMap<String, XWineEntry>(wines.size)
         for (wine in wines) {
             for (grape in wine.grapes) {
-                val key = grape.lowercase()
+                val key = TextNormalizer.normalizeForMatching(grape)
                 if (key.length > 3 && key !in gIdx) {
                     gIdx[key] = wine
                 }
@@ -489,11 +489,16 @@ class XWinesDatabase {
      */
     fun findMatch(ocrText: String): XWineEntry? {
         if (ocrText.isBlank()) return null
-        val lower = ocrText.lowercase()
-        val queryWords = lower
-            .replace(Regex("[^a-zà-ÿ\\s]"), " ")
+        val lower = TextNormalizer.normalizeForMatching(ocrText)
+
+        // Build query words with OCR-corrected variants for fuzzy matching
+        val rawWords = lower
+            .replace(Regex("[^a-z0-9\\s]"), " ")
             .split(Regex("\\s+"))
-            .filter { it.length > 2 && it !in STOP_WORDS }
+            .filter { it.length > 2 }
+        val queryWords = rawWords
+            .flatMap { TextNormalizer.ocrWordVariants(it) }
+            .filter { it !in STOP_WORDS }
             .toSet()
 
         // Score wines by how many of their distinctive name words appear in the OCR text

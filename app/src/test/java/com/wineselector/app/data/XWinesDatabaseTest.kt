@@ -476,4 +476,68 @@ class XWinesDatabaseTest {
     fun `findClosestVintage - empty list returns null`() {
         assertNull(XWinesDatabase.findClosestVintage(emptyList(), 2020))
     }
+
+    // ==========================================
+    // Accent-stripped OCR matching
+    // ==========================================
+
+    @Test
+    fun `findMatch - should match Pessac-Leognan without accent`() {
+        // Dataset has "Pessac-Léognan" with accent on é
+        val match = db.findMatch("Pessac-Leognan 2018")
+        assertNotNull("Should match Pessac-Leognan without accent", match)
+        assertTrue(match!!.wineName.contains("Pessac"))
+    }
+
+    @Test
+    fun `findMatch - should match Alem do Rio without accent`() {
+        // Dataset has "Além do Rio Branco" with accent on é
+        val match = db.findMatch("Alem do Rio Branco")
+        assertNotNull("Should match Alem without accent", match)
+        assertTrue(match!!.wineName.contains("Rio"))
+    }
+
+    @Test
+    fun `findMatch - should match Coteaux d Aix-en-Provence without accent`() {
+        // Dataset has "Coteaux d'Aix-en-Provence Rosé"
+        val match = db.findMatch("Coteaux d'Aix-en-Provence Rose")
+        assertNotNull("Should match Coteaux without accent", match)
+        assertTrue(match!!.wineName.contains("Coteaux"))
+    }
+
+    @Test
+    fun `findMatch - should match Muller Thurgau without umlaut`() {
+        // Dataset has "Müller Thurgau Alto Adige" with umlaut
+        val match = db.findMatch("Muller Thurgau Alto Adige")
+        assertNotNull("Should match Muller Thurgau without umlaut", match)
+        assertTrue(match!!.wineName.contains("Thurgau"))
+    }
+
+    // ==========================================
+    // OCR character substitution tolerance
+    // ==========================================
+
+    @Test
+    fun `findMatch - should match with zero for O substitution`() {
+        // "0rigem Merl0t" — zero instead of 'O' and 'o'
+        val match = db.findMatch("0rigem Merl0t 2019")
+        assertNotNull("Should match with 0->o substitution", match)
+        assertTrue(match!!.wineName.contains("Origem"))
+    }
+
+    @Test
+    fun `findMatch - should match with one for L substitution`() {
+        // "Ma1bec" — one instead of 'l'
+        val match = db.findMatch("Los Cardos Ma1bec")
+        assertNotNull("Should match with 1->l substitution", match)
+        assertTrue(match!!.wineName.contains("Malbec"))
+    }
+
+    @Test
+    fun `findMatch - should match with five for S substitution`() {
+        // "5ancerre" — five instead of 'S'
+        val match = db.findMatch("5ancerre Les Baronnes Rose")
+        assertNotNull("Should match with 5->s substitution", match)
+        assertTrue(match!!.wineName.contains("Sancerre"))
+    }
 }

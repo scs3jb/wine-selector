@@ -1028,4 +1028,281 @@ class WinePairingEngineTest {
         // "Pinot Noir" section context should give the wine underneath a pinot noir score
         assertTrue("Should match wine via section context from continuation header", results.isNotEmpty())
     }
+
+    // ==========================================
+    // Accent-stripped OCR text tests
+    // ==========================================
+
+    @Test
+    fun `French list - should match Cotes du Rhone without accents`() {
+        val text = """
+            VINS ROUGES
+
+            Cotes du Rhone Villages 2021
+            Rhone Valley
+            Glass $13 | Bottle $48
+        """.trimIndent()
+        val results = engine.recommendWines(text, FoodCategory.LAMB)
+        assertTrue("Should match Cotes du Rhone without accents", results.isNotEmpty())
+        assertTrue(
+            "Should contain cotes du rhone match",
+            results.any { it.originalText.contains("Cotes", ignoreCase = true) }
+        )
+    }
+
+    @Test
+    fun `French list - should match Chateau without accent via bordeaux keyword`() {
+        val text = """
+            Chateau Larose-Trintaudon 2018
+            Haut-Medoc, Bordeaux
+            Glass $22 | Bottle $88
+        """.trimIndent()
+        val results = engine.recommendWines(text, FoodCategory.BEEF)
+        assertTrue("Should match Chateau without accent via bordeaux keyword", results.isNotEmpty())
+    }
+
+    @Test
+    fun `should match Rose section header without accent`() {
+        val text = """
+            Rose
+
+            Whispering Angel 2023
+            Provence, France
+            Glass $16 | Bottle $62
+        """.trimIndent()
+        val results = engine.recommendWines(text, FoodCategory.CHICKEN)
+        assertTrue("Should match wine under unaccented Rose header", results.isNotEmpty())
+        for (result in results) {
+            assertFalse(
+                "Should not match bare 'Rose' header, got: ${result.originalText}",
+                result.originalText.trim().equals("Rose", ignoreCase = true)
+            )
+        }
+    }
+
+    // ==========================================
+    // OCR character substitution tests
+    // ==========================================
+
+    @Test
+    fun `should match Merlot with zero-for-O OCR error`() {
+        val text = "Merl0t Reserve 2019 $45"
+        val results = engine.recommendWines(text, FoodCategory.BEEF)
+        assertTrue("Should match 'Merl0t' as Merlot", results.isNotEmpty())
+        assertTrue("Score should be > 0", results[0].score > 0)
+    }
+
+    @Test
+    fun `should match Pinot Noir with zero-for-O OCR error`() {
+        val text = "Pin0t Noir Reserve 2020 $52"
+        val results = engine.recommendWines(text, FoodCategory.CHICKEN)
+        assertTrue("Should match 'Pin0t N0ir' as Pinot Noir", results.isNotEmpty())
+    }
+
+    @Test
+    fun `should match Sauvignon with five-for-S OCR error`() {
+        val text = "5auvignon Blanc 2023 $42"
+        val results = engine.recommendWines(text, FoodCategory.FISH)
+        assertTrue("Should match '5auvignon Blanc' as Sauvignon Blanc", results.isNotEmpty())
+    }
+
+    @Test
+    fun `should match Malbec with one-for-L OCR error`() {
+        val text = "Ma1bec Reserve 2020 $48"
+        val results = engine.recommendWines(text, FoodCategory.BEEF)
+        assertTrue("Should match 'Ma1bec' as Malbec", results.isNotEmpty())
+    }
+
+    // ==========================================
+    // Entry coalescing - wines without prices
+    // ==========================================
+
+    @Test
+    fun `should split wines listed without prices when keywords present`() {
+        // Real-world wine list with vintages but no prices — e.g., tasting menu
+        val text = """
+            Kendall-Jackson Chardonnay 2022
+            Sonoma County
+            Meiomi Pinot Noir 2021
+            Willamette Valley
+        """.trimIndent()
+        val results = engine.recommendWines(text, FoodCategory.CHICKEN)
+        val hasChardonnay = results.any {
+            it.originalText.contains("Chardonnay", ignoreCase = true)
+        }
+        val hasPinotNoir = results.any {
+            it.originalText.contains("Pinot Noir", ignoreCase = true)
+        }
+        assertTrue("Should find Chardonnay", hasChardonnay)
+        assertTrue("Should find Pinot Noir", hasPinotNoir)
+    }
+
+    @Test
+    fun `should split wines with region lines as separators`() {
+        // Wines with region lines but no prices between them
+        val text = """
+            Reserve Cabernet Sauvignon 2020
+            Napa Valley
+            Estate Merlot 2021
+            Sonoma County
+        """.trimIndent()
+        val results = engine.recommendWines(text, FoodCategory.BEEF)
+        assertTrue("Should find at least 2 separate wines", results.size >= 2)
+        val hasCab = results.any {
+            it.originalText.contains("Cabernet", ignoreCase = true)
+        }
+        val hasMerlot = results.any {
+            it.originalText.contains("Merlot", ignoreCase = true)
+        }
+        assertTrue("Should find Cabernet", hasCab)
+        assertTrue("Should find Merlot", hasMerlot)
+    }
+
+    @Test
+    fun `should split three wines without prices`() {
+        // Three wines with vintages and regions but no prices
+        val text = """
+            Reserve Cabernet Sauvignon 2020
+            Napa Valley
+            Estate Merlot 2021
+            Sonoma County
+            Gran Malbec 2019
+            Mendoza, Argentina
+        """.trimIndent()
+        val results = engine.recommendWines(text, FoodCategory.BEEF)
+        assertTrue("Should find at least 3 separate wines", results.size >= 3)
+    }
+
+    @Test
+    fun `should split wines by keyword when next line is wine keyword`() {
+        // Two wines on consecutive lines where keyword is the split indicator
+        val text = """
+            Chianti Classico Riserva 2018
+            Tuscany
+            Montepulciano d'Abruzzo 2022
+            Abruzzo
+        """.trimIndent()
+        val results = engine.recommendWines(text, FoodCategory.PASTA)
+        val hasChianti = results.any {
+            it.originalText.contains("Chianti", ignoreCase = true)
+        }
+        val hasMontepulciano = results.any {
+            it.originalText.contains("Montepulciano", ignoreCase = true)
+        }
+        assertTrue("Should find Chianti", hasChianti)
+        assertTrue("Should find Montepulciano", hasMontepulciano)
+    }
+
+    // ==========================================
+    // Keyword-based section header filtering
+    // ==========================================
+
+    @Test
+    fun `should not match Merlot Blends header as a wine`() {
+        val text = """
+            Merlot Blends
+
+            Château Margaux 2018
+            Bordeaux
+            $120
+        """.trimIndent()
+        val results = engine.recommendWines(text, FoodCategory.BEEF)
+        for (result in results) {
+            assertFalse(
+                "Should not match 'Merlot Blends' header as wine, got: ${result.originalText}",
+                result.originalText.trim().equals("Merlot Blends", ignoreCase = true)
+            )
+        }
+    }
+
+    @Test
+    fun `should not match Blends with Merlot header as a wine`() {
+        val text = """
+            Blends with Merlot
+
+            Château Margaux 2018
+            Bordeaux
+            $120
+        """.trimIndent()
+        val results = engine.recommendWines(text, FoodCategory.BEEF)
+        for (result in results) {
+            assertFalse(
+                "Should not match 'Blends with Merlot' header, got: ${result.originalText}",
+                result.originalText.trim().equals("Blends with Merlot", ignoreCase = true)
+            )
+        }
+    }
+
+    @Test
+    fun `should not match Merlot Wine header as a wine`() {
+        val text = """
+            Merlot Wine
+
+            Duckhorn Merlot 2019
+            Napa Valley
+            $78
+        """.trimIndent()
+        val results = engine.recommendWines(text, FoodCategory.BEEF)
+        assertTrue("Should find actual wine", results.isNotEmpty())
+        for (result in results) {
+            assertFalse(
+                "Should not match bare 'Merlot Wine' header, got: ${result.originalText}",
+                result.originalText.trim().equals("Merlot Wine", ignoreCase = true)
+            )
+        }
+    }
+
+    @Test
+    fun `should not match Merlot Selection header as a wine`() {
+        val text = """
+            Merlot Selection
+
+            Duckhorn Merlot 2019
+            Napa Valley
+            $78
+        """.trimIndent()
+        val results = engine.recommendWines(text, FoodCategory.BEEF)
+        for (result in results) {
+            assertFalse(
+                "Should not match 'Merlot Selection' header, got: ${result.originalText}",
+                result.originalText.trim().equals("Merlot Selection", ignoreCase = true)
+            )
+        }
+    }
+
+    @Test
+    fun `should carry section context from keyword header like Merlot Blends`() {
+        val text = """
+            Merlot Blends
+
+            Château Margaux 2018
+            Bordeaux
+            $120
+        """.trimIndent()
+        val results = engine.recommendWines(text, FoodCategory.BEEF)
+        // The wine under the header should inherit merlot context
+        assertTrue("Should find wine under Merlot Blends header", results.isNotEmpty())
+        assertTrue(
+            "Result should be Château Margaux, got: ${results[0].originalText}",
+            results[0].originalText.contains("Margaux", ignoreCase = true) ||
+                results[0].originalText.contains("Bordeaux", ignoreCase = true)
+        )
+    }
+
+    @Test
+    fun `should not match Our Merlot header as a wine`() {
+        val text = """
+            Our Merlot
+
+            Estate Reserve 2020
+            $65
+        """.trimIndent()
+        val results = engine.recommendWines(text, FoodCategory.BEEF)
+        for (result in results) {
+            assertFalse(
+                "Should not match 'Our Merlot' header, got: ${result.originalText}",
+                result.originalText.trim().equals("Our Merlot", ignoreCase = true)
+            )
+        }
+    }
 }

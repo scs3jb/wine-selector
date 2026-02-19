@@ -423,7 +423,19 @@ class WinePairingEngine(private val xWinesDb: XWinesDatabase? = null) {
             "house wines", "house wines by the glass",
             "beer", "cocktails", "spirits", "aperitifs",
             "bianchi", "rossi", "italian reds", "italian whites",
-            "appetizers", "entrees", "desserts", "sides"
+            "appetizers", "entrees", "desserts", "sides",
+            "blends", "our wines", "featured wines", "wine flights"
+        )
+
+        // Patterns for section headers that contain a wine keyword as a descriptor,
+        // e.g., "Merlot Blends", "Blends with Merlot", "Our Merlot", "Merlot Selection"
+        private val HEADER_SUFFIX_WORDS = setOf(
+            "blends", "blend", "selections", "selection", "offerings",
+            "varietals", "varieties", "flights", "features", "featured"
+        )
+        private val HEADER_PREFIX_WORDS = setOf(
+            "our", "featured", "house", "premium", "reserve", "special",
+            "blends with", "wines from", "selections of"
         )
     }
 
@@ -460,6 +472,28 @@ class WinePairingEngine(private val xWinesDb: XWinesDatabase? = null) {
             }
         }
 
+        // Short lines (≤5 words) combining a wine keyword with a header
+        // suffix/prefix — e.g., "Merlot Blends", "Blends with Merlot",
+        // "Our Merlot", "Merlot Selection"
+        if (wordCount in 2..5) {
+            val normalized = TextNormalizer.normalizeForMatching(line).trim()
+            val words = normalized.split(Regex("\\s+"))
+            val hasKeyword = wineKeywords.keys.any { normalized.contains(it) }
+            if (hasKeyword) {
+                // Check for suffix pattern: "[keyword] blends", "[keyword] selection"
+                val lastWord = words.last()
+                if (lastWord in HEADER_SUFFIX_WORDS) return true
+
+                // Check for prefix pattern: "our [keyword]", "blends with [keyword]"
+                for (prefix in HEADER_PREFIX_WORDS) {
+                    if (normalized.startsWith(prefix)) return true
+                }
+
+                // Check for "blends with [keyword]" anywhere
+                if (normalized.contains("blends with") || normalized.contains("blend of")) return true
+            }
+        }
+
         return false
     }
 
@@ -470,7 +504,7 @@ class WinePairingEngine(private val xWinesDb: XWinesDatabase? = null) {
      * as a grape variety under a producer name.
      */
     private fun isBareKeywordLine(line: String): Boolean {
-        val lower = line.lowercase().trim()
+        val lower = TextNormalizer.normalizeForMatching(line).trim()
         if (VINTAGE_PATTERN.containsMatchIn(line)) return false
         if (lineHasPrice(line)) return false
         if (VOLUME_PATTERN.containsMatchIn(line)) return false
@@ -527,18 +561,34 @@ class WinePairingEngine(private val xWinesDb: XWinesDatabase? = null) {
         if (text.contains(Regex("""\bNV\b"""))) return false
         if (VOLUME_PATTERN.containsMatchIn(text)) return false
 
-        val lower = text.lowercase().trim()
-        val wordCount = lower.split(Regex("\\s+")).filter { it.isNotEmpty() }.size
+        val lower = TextNormalizer.normalizeForMatching(text).trim()
+        val words = lower.split(Regex("\\s+")).filter { it.isNotEmpty() }
+        val wordCount = words.size
 
-        // Very short entries (1-3 words) that match a keyword are likely labels
-        if (wordCount > 3) return false
+        // Very short entries (1-5 words) that match a keyword pattern are likely labels
+        if (wordCount > 5) return false
 
         for (keyword in wineKeywords.keys) {
+            // Exact keyword match: "merlot", "merlots", "merlot wine", "merlot wines"
             if (lower == keyword || lower == "${keyword}s" ||
                 lower == "$keyword wines" || lower == "$keyword wine") {
                 return true
             }
         }
+
+        // Check for keyword + header suffix: "merlot blends", "merlot selection"
+        if (wordCount in 2..5) {
+            val hasKeyword = wineKeywords.keys.any { lower.contains(it) }
+            if (hasKeyword) {
+                val lastWord = words.last()
+                if (lastWord in HEADER_SUFFIX_WORDS) return true
+                for (prefix in HEADER_PREFIX_WORDS) {
+                    if (lower.startsWith(prefix)) return true
+                }
+                if (lower.contains("blends with") || lower.contains("blend of")) return true
+            }
+        }
+
         return false
     }
 
@@ -547,7 +597,7 @@ class WinePairingEngine(private val xWinesDb: XWinesDatabase? = null) {
      * E.g., "CHAMPAGNE" -> "champagne", "ROSÉ" -> "rosé", "SPARKLING" -> "sparkling"
      */
     private fun extractSectionKeyword(headerLine: String): String? {
-        val lower = headerLine.lowercase().trim()
+        val lower = TextNormalizer.normalizeForMatching(headerLine).trim()
         // Check if the header itself is or contains a wine keyword
         for (keyword in wineKeywords.keys) {
             if (lower.contains(keyword)) return keyword
@@ -605,6 +655,43 @@ class WinePairingEngine(private val xWinesDb: XWinesDatabase? = null) {
         return false
     }
 
+    // Common wine regions used to detect region-line boundaries between entries
+    private val KNOWN_REGIONS = setOf(
+        "tuscany", "piedmont", "burgundy", "bordeaux", "champagne",
+        "napa valley", "sonoma", "sonoma county", "sonoma coast",
+        "mendoza", "marlborough", "barossa", "barossa valley",
+        "loire valley", "rhone valley", "alsace", "provence",
+        "california", "willamette valley", "douro", "rioja",
+        "ribera del duero", "mosel", "rheingau", "stellenbosch",
+        "central coast", "paso robles", "columbia valley",
+        "alto adige", "veneto", "sicily", "puglia", "abruzzo",
+        "languedoc", "beaujolais", "south australia", "hunter valley",
+        "hawkes bay", "casablanca valley", "maipo valley"
+    )
+
+    /**
+     * Returns true if a line looks like a wine region or country descriptor,
+     * not a wine name. Short lines matching known regions without price/vintage.
+     */
+    private fun looksLikeRegionLine(line: String): Boolean {
+        val lower = line.lowercase().trim()
+        if (VINTAGE_PATTERN.containsMatchIn(line)) return false
+        if (lineHasPrice(line)) return false
+        val words = lower.split(Regex("\\s+")).filter { it.isNotEmpty() }.size
+        if (words > 4) return false
+        // Strip trailing comma + country (e.g., "Mendoza, Argentina")
+        val stripped = lower.replace(Regex(",.*$"), "").trim()
+        return KNOWN_REGIONS.any { stripped == it || lower.startsWith("$it,") }
+    }
+
+    /**
+     * Returns true if a line contains a known wine keyword.
+     */
+    private fun lineHasWineKeyword(line: String): Boolean {
+        val lower = TextNormalizer.normalizeForMatching(line)
+        return wineKeywords.keys.any { lower.contains(it) }
+    }
+
     /**
      * Determine if we should split before this line — i.e., the previous
      * accumulated lines form a complete entry and this line starts a new one.
@@ -627,6 +714,39 @@ class WinePairingEngine(private val xWinesDb: XWinesDatabase? = null) {
         // If the previous group has 4+ lines, this is getting long — split on
         // any line that has a vintage or starts with a capital producer name
         if (currentLines.size >= 4 && looksLikeNewWineStart(nextLine)) return true
+
+        // If current group has 2+ lines and next line is a new wine start,
+        // split when either side contains a wine keyword — catches entries
+        // without prices/vintages like "Pinot Noir\nSonoma\nChardonnay\nNapa"
+        if (currentLines.size >= 2 && looksLikeNewWineStart(nextLine)) {
+            val currentHasKeyword = currentLines.any { lineHasWineKeyword(it) }
+            val nextHasKeyword = lineHasWineKeyword(nextLine)
+            if (currentHasKeyword || nextHasKeyword) return true
+        }
+
+        // If previous group ends with a region line and next starts a new wine,
+        // the region is likely the end of the previous entry
+        if (currentLines.size >= 2 &&
+            looksLikeRegionLine(currentLines.last()) &&
+            looksLikeNewWineStart(nextLine)) {
+            return true
+        }
+
+        // If the next line IS a known wine keyword (e.g., "Merlot", "Chardonnay")
+        // and the current group already has a wine keyword, split — even for
+        // single-word lines that don't pass looksLikeNewWineStart()
+        if (currentLines.isNotEmpty() && lineHasWineKeyword(nextLine)) {
+            val currentHasKeyword = currentLines.any { lineHasWineKeyword(it) }
+            if (currentHasKeyword) return true
+        }
+
+        // If the previous group ends with a region line and the next line
+        // is a known wine keyword, split even for single-word entries
+        if (currentLines.size >= 1 &&
+            looksLikeRegionLine(currentLines.last()) &&
+            lineHasWineKeyword(nextLine)) {
+            return true
+        }
 
         return false
     }
@@ -735,11 +855,12 @@ class WinePairingEngine(private val xWinesDb: XWinesDatabase? = null) {
                 val grapeInference = inferScoreFromGrapes(xEntry.grapes, food)
                 val grapeScore = grapeInference?.first ?: 0
 
-                val entryLower = entry.combinedText.lowercase()
+                val entryLower = TextNormalizer.normalizeForMatching(entry.combinedText)
+                val entryOcrCorrected = TextNormalizer.normalizeForOcrMatching(entry.combinedText)
                 var keywordScore = 0
                 var keywordReason = ""
                 for ((keyword, profile) in wineKeywords) {
-                    if (entryLower.contains(keyword)) {
+                    if (entryLower.contains(keyword) || entryOcrCorrected.contains(keyword)) {
                         if (profile.type != null && !preferences.allowedTypes.contains(profile.type)) continue
                         val s = profile.scores[food] ?: 0
                         if (s > keywordScore) {
@@ -842,12 +963,13 @@ class WinePairingEngine(private val xWinesDb: XWinesDatabase? = null) {
             // detection, not specific wine listings.
             if (isBareKeywordEntry(entry) && sectionKw == null) continue
 
-            val lower = entry.combinedText.lowercase()
+            val lower = TextNormalizer.normalizeForMatching(entry.combinedText)
+            val lowerOcrCorrected = TextNormalizer.normalizeForOcrMatching(entry.combinedText)
             var bestScore = 0
             var bestReason = ""
 
             for ((keyword, profile) in wineKeywords) {
-                if (lower.contains(keyword)) {
+                if (lower.contains(keyword) || lowerOcrCorrected.contains(keyword)) {
                     // Apply type filter for keyword matches
                     if (profile.type != null && !preferences.allowedTypes.contains(profile.type)) continue
                     val score = profile.scores[food] ?: 0
@@ -1008,7 +1130,7 @@ class WinePairingEngine(private val xWinesDb: XWinesDatabase? = null) {
 
         // First pass: a line containing a wine keyword + vintage (e.g., "Merlot Reserve 2019")
         for (line in lines) {
-            val lower = line.lowercase()
+            val lower = TextNormalizer.normalizeForMatching(line)
             val hasKeyword = wineKeywords.keys.any { lower.contains(it) }
             val hasVintage = VINTAGE_PATTERN.containsMatchIn(line)
             if (hasKeyword && hasVintage) {
@@ -1028,7 +1150,7 @@ class WinePairingEngine(private val xWinesDb: XWinesDatabase? = null) {
 
         // Third pass: first line with a wine keyword that isn't a bare keyword
         for (line in lines) {
-            val lower = line.lowercase()
+            val lower = TextNormalizer.normalizeForMatching(line)
             val hasKeyword = wineKeywords.keys.any { lower.contains(it) }
             if (hasKeyword && line.trim().split(Regex("\\s+")).size > 1) {
                 return cleanDisplayName(line)
@@ -1063,7 +1185,7 @@ class WinePairingEngine(private val xWinesDb: XWinesDatabase? = null) {
         var bestScore = 0
         var bestReason = ""
         for (grape in grapes) {
-            val key = grape.lowercase()
+            val key = TextNormalizer.normalizeForMatching(grape)
             val profile = wineKeywords[key] ?: continue
             val score = profile.scores[food] ?: 0
             if (score > bestScore) {
