@@ -1,6 +1,7 @@
 package com.wineselector.app.ui.screens
 
 import androidx.compose.foundation.clickable
+import com.wineselector.app.data.WinePreferences
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -160,7 +161,7 @@ fun HomeScreen(
 
             Spacer(modifier = Modifier.height(4.dp))
             Text(
-                text = "Budget: up to \$$maxPrice",
+                text = "Budget: up to ${WinePreferences.localCurrencySymbol()}$maxPrice",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.tertiary.copy(alpha = 0.7f),
                 modifier = Modifier.clickable(onClick = onOpenSettings)
