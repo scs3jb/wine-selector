@@ -1305,4 +1305,78 @@ class WinePairingEngineTest {
             )
         }
     }
+
+    @Test
+    fun `should not match Merlots and Blends header as a wine`() {
+        val text = """
+            Merlots and Blends
+
+            Château Margaux 2018
+            Bordeaux
+            $120
+        """.trimIndent()
+        val results = engine.recommendWines(text, FoodCategory.BEEF)
+        for (result in results) {
+            assertFalse(
+                "Should not match 'Merlots and Blends' header, got: ${result.originalText}",
+                result.originalText.trim().equals("Merlots and Blends", ignoreCase = true)
+            )
+        }
+        // Should still find the actual wine underneath
+        assertTrue("Should find wine under header", results.isNotEmpty())
+    }
+
+    @Test
+    fun `should not match Merlots and Blends header without blank line`() {
+        // OCR often doesn't produce blank lines between headers and entries
+        val text = """
+            Merlots and Blends
+            Château Margaux 2018
+            Bordeaux
+            $120
+        """.trimIndent()
+        val results = engine.recommendWines(text, FoodCategory.BEEF)
+        for (result in results) {
+            assertFalse(
+                "Should not match 'Merlots and Blends' as wine, got: ${result.originalText}",
+                result.originalText.trim().equals("Merlots and Blends", ignoreCase = true)
+            )
+        }
+    }
+
+    @Test
+    fun `should not match Cabernet and Blends header as a wine`() {
+        val text = """
+            Cabernet and Blends
+
+            Opus One 2019
+            Napa Valley
+            $450
+        """.trimIndent()
+        val results = engine.recommendWines(text, FoodCategory.BEEF)
+        for (result in results) {
+            assertFalse(
+                "Should not match 'Cabernet and Blends' header, got: ${result.originalText}",
+                result.originalText.trim().equals("Cabernet and Blends", ignoreCase = true)
+            )
+        }
+    }
+
+    @Test
+    fun `should not match Pinot Noir and Friends header as a wine`() {
+        val text = """
+            Pinot Noir & Friends
+
+            Kosta Browne 2019
+            Sonoma Coast
+            $85
+        """.trimIndent()
+        val results = engine.recommendWines(text, FoodCategory.CHICKEN)
+        for (result in results) {
+            assertFalse(
+                "Should not match 'Pinot Noir & Friends' header, got: ${result.originalText}",
+                result.originalText.trim().equals("Pinot Noir & Friends", ignoreCase = true)
+            )
+        }
+    }
 }

@@ -71,6 +71,7 @@ class XWinesDatabase {
         "brut", "sec", "dry", "sweet", "noir", "blanc"
     )
 
+
     private val harmonizeToCategory: Map<String, FoodCategory> = buildMap {
         // Meat
         put("beef", FoodCategory.BEEF)
@@ -510,9 +511,10 @@ class XWinesDatabase {
             }
         }
 
-        // Find best match: require at least 2 distinctive word matches AND
-        // that matched words cover >= 50% of the wine name's distinctive words.
-        // Score by match ratio to prefer tighter matches.
+        // Find best match: require >= 50% coverage of the wine name's distinctive
+        // words. For wines with 2+ distinctive words, require at least 2 matched.
+        // For wines with exactly 1 distinctive word (e.g., "Reserva Chardonnay"
+        // where "reserva" is a stop word), allow matchCount=1 at 100% coverage.
         var bestMatch: XWineEntry? = null
         var bestRatio = 0f
         var bestCount = 0
@@ -522,9 +524,14 @@ class XWinesDatabase {
 
             val ratio = matchCount.toFloat() / totalWords
 
-            // Need at least 2 matched distinctive words and >= 50% coverage
-            if (matchCount < 2) continue
-            if (ratio < 0.5f) continue
+            if (totalWords == 1) {
+                // 1-word wine: require exact match (100% coverage)
+                if (matchCount < 1 || ratio < 1.0f) continue
+            } else {
+                // 2+ word wine: require at least 2 matches and >= 50% coverage
+                if (matchCount < 2) continue
+                if (ratio < 0.5f) continue
+            }
 
             // Prefer higher ratio, then higher absolute count
             if (ratio > bestRatio || (ratio == bestRatio && matchCount > bestCount)) {
@@ -533,13 +540,32 @@ class XWinesDatabase {
                 bestMatch = wine
             }
         }
-        if (bestMatch != null) return bestMatch
 
-        // Fallback: grape index lookup (single words)
+        return bestMatch
+    }
+
+    /**
+     * Grape-only fallback lookup. Searches the grape index for any grape name
+     * appearing in the OCR text. Use this only when findMatch() returns null
+     * and no other matching mechanism found a result.
+     */
+    fun findMatchByGrape(ocrText: String): XWineEntry? {
+        if (ocrText.isBlank()) return null
+        val lower = TextNormalizer.normalizeForMatching(ocrText)
+
+        val queryWords = lower
+            .replace(Regex("[^a-z0-9\\s]"), " ")
+            .split(Regex("\\s+"))
+            .filter { it.length > 2 }
+            .flatMap { TextNormalizer.ocrWordVariants(it) }
+            .filter { it !in STOP_WORDS }
+            .toSet()
+
+        // Single-word grape lookup
         for (word in queryWords) {
             grapeIndex[word]?.let { return it }
         }
-        // Try multi-word grapes by checking if OCR text contains them
+        // Multi-word grape lookup (e.g., "cabernet sauvignon")
         for ((grape, wine) in grapeIndex) {
             if (grape.contains(' ') && lower.contains(grape)) {
                 return wine

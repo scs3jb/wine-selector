@@ -117,7 +117,7 @@ fun SettingsScreen(
                 )
                 Spacer(modifier = Modifier.width(12.dp))
                 Text(
-                    text = "$${sliderValue.toInt()}",
+                    text = "${WinePreferences.localCurrencySymbol()}${sliderValue.toInt()}",
                     style = MaterialTheme.typography.titleLarge,
                     fontWeight = FontWeight.Bold,
                     color = MaterialTheme.colorScheme.primary

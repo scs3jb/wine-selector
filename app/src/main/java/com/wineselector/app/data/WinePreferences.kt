@@ -35,6 +35,14 @@ data class WinePreferences(
     companion object {
         const val DEFAULT_MAX_PRICE = 60
 
+        fun localCurrencySymbol(): String {
+            return try {
+                java.util.Currency.getInstance(java.util.Locale.getDefault()).symbol
+            } catch (_: Exception) {
+                "$"
+            }
+        }
+
         private fun extractNumericPrice(text: String): Double? {
             // Currency symbol patterns ($/€/£)
             val currencyRegex = Regex("""[\$€£]\s*(\d+\.?\d*)|(\d+\.?\d*)\s*[\$€£]|(\d+\.\d{2})""")

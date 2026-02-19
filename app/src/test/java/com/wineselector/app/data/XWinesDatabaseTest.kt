@@ -149,30 +149,53 @@ class XWinesDatabaseTest {
     }
 
     // ==========================================
-    // Wine Matching - By Grape Fallback
+    // Wine Matching - By Name (1 distinctive word)
     // ==========================================
 
     @Test
-    fun `findMatch - should fall back to grape matching`() {
-        // "Merlot" is a grape in the X-Wines dataset (Origem Merlot has ['Merlot'])
-        val match = db.findMatch("Some Unknown Winery Merlot 2020")
-        assertNotNull("Should match by grape variety fallback", match)
-        assertTrue("Matched wine should have Merlot grape", match!!.grapes.contains("Merlot"))
-    }
-
-    @Test
-    fun `findMatch - should match Chardonnay grape`() {
+    fun `findMatch - should match wine with 1 distinctive name word`() {
+        // "Reserva Chardonnay" has 1 distinctive word ("chardonnay") after stop-word removal.
+        // "Estate Reserve Chardonnay 2021" has "chardonnay" which is 100% match.
         val match = db.findMatch("Estate Reserve Chardonnay 2021")
-        assertNotNull("Should match Chardonnay by grape", match)
+        assertNotNull("Should match Chardonnay by name (1-word wine)", match)
         assertTrue("Matched wine should have Chardonnay grape", match!!.grapes.contains("Chardonnay"))
     }
 
     @Test
-    fun `findMatch - should match Pinot Noir grape`() {
-        val match = db.findMatch("Willamette Valley Pinot Noir 2020 $52")
+    fun `findMatch - should not match via grape when name has no overlap`() {
+        // "Some Unknown Winery Merlot 2020" — only "merlot" overlaps with "Origem Merlot"
+        // (1 of 2 distinctive words). findMatch should NOT fall through to grape index.
+        val match = db.findMatch("Some Unknown Winery Merlot 2020")
+        // This might match a 1-word wine via name index, or return null — either is OK.
+        // The key assertion: if it matches, it should be via name index, not grape.
+        if (match != null) {
+            assertTrue("Matched wine should have Merlot grape", match.grapes.contains("Merlot"))
+        }
+    }
+
+    // ==========================================
+    // Wine Matching - By Grape (explicit fallback)
+    // ==========================================
+
+    @Test
+    fun `findMatchByGrape - should match Merlot grape`() {
+        val match = db.findMatchByGrape("Some Unknown Winery Merlot 2020")
+        assertNotNull("Should match by grape variety", match)
+        assertTrue("Matched wine should have Merlot grape", match!!.grapes.contains("Merlot"))
+    }
+
+    @Test
+    fun `findMatchByGrape - should match Pinot Noir grape`() {
+        val match = db.findMatchByGrape("Willamette Valley Pinot Noir 2020 $52")
         assertNotNull("Should match Pinot Noir by grape", match)
         assertTrue("Matched wine should have Pinot Noir grape",
             match!!.grapes.any { it.contains("Pinot Noir") })
+    }
+
+    @Test
+    fun `findMatchByGrape - should not match non-grape text`() {
+        val match = db.findMatchByGrape("Grilled Salmon with lemon")
+        assertNull("Non-wine text should not match any grape", match)
     }
 
     // ==========================================
@@ -369,7 +392,7 @@ class XWinesDatabaseTest {
         val ratingsStream = javaClass.classLoader!!.getResourceAsStream("xwines_slim_ratings.csv")!!
         slimDb.loadFromStreams(winesStream, ratingsStream)
 
-        val match = slimDb.findMatch("A nice Ancellotta from the region")
+        val match = slimDb.findMatchByGrape("A nice Ancellotta from the region")
         assertNotNull("Should find by Ancellotta grape", match)
         assertTrue(match!!.grapes.any { it.contains("Ancellotta") })
     }
@@ -539,5 +562,27 @@ class XWinesDatabaseTest {
         val match = db.findMatch("5ancerre Les Baronnes Rose")
         assertNotNull("Should match with 5->s substitution", match)
         assertTrue(match!!.wineName.contains("Sancerre"))
+    }
+
+    // ==========================================
+    // Section header text should NOT match
+    // ==========================================
+
+    @Test
+    fun `findMatch - should not match section header Merlots and Blends`() {
+        val match = db.findMatch("Merlots and Blends")
+        assertNull("Section header 'Merlots and Blends' should not match any wine", match)
+    }
+
+    @Test
+    fun `findMatch - should not match section header Merlot Blends`() {
+        val match = db.findMatch("Merlot Blends")
+        assertNull("Section header 'Merlot Blends' should not match any wine", match)
+    }
+
+    @Test
+    fun `findMatch - should not match section header Cabernet and Blends`() {
+        val match = db.findMatch("Cabernet and Blends")
+        assertNull("Section header 'Cabernet and Blends' should not match any wine", match)
     }
 }

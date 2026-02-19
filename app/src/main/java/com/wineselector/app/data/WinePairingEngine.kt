@@ -431,7 +431,8 @@ class WinePairingEngine(private val xWinesDb: XWinesDatabase? = null) {
         // e.g., "Merlot Blends", "Blends with Merlot", "Our Merlot", "Merlot Selection"
         private val HEADER_SUFFIX_WORDS = setOf(
             "blends", "blend", "selections", "selection", "offerings",
-            "varietals", "varieties", "flights", "features", "featured"
+            "varietals", "varieties", "flights", "features", "featured",
+            "friends", "favorites", "favourites", "picks", "choices"
         )
         private val HEADER_PREFIX_WORDS = setOf(
             "our", "featured", "house", "premium", "reserve", "special",
@@ -996,9 +997,11 @@ class WinePairingEngine(private val xWinesDb: XWinesDatabase? = null) {
             }
 
             // X-Wines grape fallback — when neither keyword nor section context matched,
-            // try identifying the wine via X-Wines and infer score from its grapes
+            // try identifying the wine via X-Wines name match first, then grape match
+            // as a last resort, and infer score from its grapes
             if (bestScore == 0 && xWinesDb != null) {
                 val xMatch = xWinesDb.findMatch(entry.combinedText)
+                    ?: xWinesDb.findMatchByGrape(entry.combinedText)
                 if (xMatch != null && preferences.acceptsGrapes(xMatch.grapes) &&
                     preferences.acceptsType(xMatch.type)) {
                     val grapeInference = inferScoreFromGrapes(xMatch.grapes, food)
