@@ -415,15 +415,22 @@ class WinePairingEngine(private val xWinesDb: XWinesDatabase? = null) {
             "wines", "wine", "wine list", "wine selection", "wine & beer",
             "vins", "vins blancs", "vins rouges", "vini", "vini italiani",
             "reds", "whites", "red wines", "white wines",
+            "red wine", "white wine", "dessert wine", "sweet wine",
             "rosés", "sparkling wines", "dessert wines", "sweet wines",
-            "sparklings", "champagnes",
+            "sparkling", "sparklings", "champagnes", "champagnes and sparkling",
             "selection", "list", "carte", "carte des vins", "menu",
             "by the glass", "by the bottle", "bottles", "glasses",
-            "premium", "premium bottles", "reserve list",
+            "wines by the glass", "wines by the bottle",
+            "red wines by the glass", "white wines by the glass",
+            "red wines by the bottle", "white wines by the bottle",
+            "premium", "premium bottles", "reserve list", "reserve wines",
             "house wines", "house wines by the glass",
+            "house selections", "our selection", "featured selections",
             "beer", "cocktails", "spirits", "aperitifs",
+            "cocktails and spirits", "non alcoholic", "soft drinks",
             "bianchi", "rossi", "italian reds", "italian whites",
             "appetizers", "entrees", "desserts", "sides",
+            "main courses", "bar snacks", "starters", "mains",
             "blends", "our wines", "featured wines", "wine flights"
         )
 
@@ -438,6 +445,46 @@ class WinePairingEngine(private val xWinesDb: XWinesDatabase? = null) {
             "our", "featured", "house", "premium", "reserve", "special",
             "blends with", "wines from", "selections of"
         )
+
+        /**
+         * Generic vocabulary words that appear in section headers but never
+         * uniquely identify a specific wine. A short line (≤6 words) where
+         * every word is in this set is definitionally a header.
+         */
+        private val HEADER_VOCABULARY = setOf(
+            // Wine type descriptors
+            "red", "white", "rosé", "rose", "sparkling", "still",
+            "dessert", "sweet", "fortified", "natural", "organic", "biodynamic",
+            // Wine nouns
+            "wine", "wines", "vino", "vini", "vin", "vins",
+            // Menu/list labels
+            "list", "selection", "selections", "menu", "carte",
+            // Qualifiers
+            "premium", "reserve", "house", "our", "featured", "special",
+            // Serving format
+            "by", "the", "glass", "bottle", "bottles", "glasses", "carafe",
+            // Connectors
+            "and", "or", "di", "del", "des", "les", "de", "du",
+            // Non-wine menu categories
+            "cocktails", "spirits", "beers", "beer", "aperitifs",
+            "starters", "mains", "sides", "snacks",
+            // Common suffixes
+            "blends", "flights", "picks", "favorites", "favourites"
+        )
+
+        /**
+         * Returns true if a line is composed entirely of generic header
+         * vocabulary words — no producer names, grapes, or specific labels.
+         */
+        fun isEntirelyHeaderVocabulary(line: String): Boolean {
+            val stripped = line.lowercase()
+                .replace(Regex("[^a-z\\s]"), "")
+                .trim()
+            if (stripped.isEmpty()) return false
+            val words = stripped.split(Regex("\\s+")).filter { it.isNotEmpty() }
+            if (words.isEmpty() || words.size > 6) return false
+            return words.all { it in HEADER_VOCABULARY }
+        }
     }
 
     /**
@@ -463,6 +510,10 @@ class WinePairingEngine(private val xWinesDb: XWinesDatabase? = null) {
 
         // Exact match to a known header phrase
         if (stripped in HEADER_PHRASES) return true
+
+        // Lines composed entirely of generic header vocabulary are section headers.
+        // Catches "Red Wines by the Glass", "Premium White Selection", etc.
+        if (isEntirelyHeaderVocabulary(line)) return true
 
         // Short ALL-CAPS lines with no year/price are headers
         // (e.g., "ROSÉ", "CHAMPAGNE", "SPARKLING", "VINS ROUGES")
@@ -541,6 +592,9 @@ class WinePairingEngine(private val xWinesDb: XWinesDatabase? = null) {
         if (VINTAGE_PATTERN.containsMatchIn(line)) return true
         // Contains "NV" (non-vintage) — wine label
         if (line.contains(Regex("""\bNV\b"""))) return true
+        // Lines composed entirely of generic header vocabulary are not wine entries,
+        // even if they have 2+ capitalized words (e.g., "Red Wines", "White Selection")
+        if (isEntirelyHeaderVocabulary(line)) return false
         // Has at least 2 capitalized words (producer + name) and > 1 word total
         val words = line.split(Regex("\\s+")).filter { it.isNotEmpty() }
         if (words.size < 2) return false
@@ -568,6 +622,9 @@ class WinePairingEngine(private val xWinesDb: XWinesDatabase? = null) {
 
         // Very short entries (1-5 words) that match a keyword pattern are likely labels
         if (wordCount > 5) return false
+
+        // Entries composed entirely of generic header vocabulary are labels, not wines.
+        if (isEntirelyHeaderVocabulary(text)) return true
 
         for (keyword in wineKeywords.keys) {
             // Exact keyword match: "merlot", "merlots", "merlot wine", "merlot wines"
@@ -749,6 +806,10 @@ class WinePairingEngine(private val xWinesDb: XWinesDatabase? = null) {
             return true
         }
 
+        // If the next line is entirely generic header vocabulary, force a split
+        // so it gets evaluated as a potential header rather than being coalesced.
+        if (currentLines.isNotEmpty() && isEntirelyHeaderVocabulary(nextLine)) return true
+
         return false
     }
 
@@ -840,6 +901,8 @@ class WinePairingEngine(private val xWinesDb: XWinesDatabase? = null) {
 
         if (xWinesDb != null) {
             for ((entry, sectionKw) in entries) {
+                // Skip bare keyword entries — they're labels, not wines
+                if (isBareKeywordEntry(entry)) continue
                 val matchResult = xWinesDb.findMatchWithVintage(entry.combinedText) ?: continue
                 val xEntry = matchResult.entry
 
@@ -962,7 +1025,7 @@ class WinePairingEngine(private val xWinesDb: XWinesDatabase? = null) {
             // Skip entries that are just bare wine keywords (e.g., "Champagne",
             // "Merlot") — these are section labels that slipped past header
             // detection, not specific wine listings.
-            if (isBareKeywordEntry(entry) && sectionKw == null) continue
+            if (isBareKeywordEntry(entry)) continue
 
             val lower = TextNormalizer.normalizeForMatching(entry.combinedText)
             val lowerOcrCorrected = TextNormalizer.normalizeForOcrMatching(entry.combinedText)

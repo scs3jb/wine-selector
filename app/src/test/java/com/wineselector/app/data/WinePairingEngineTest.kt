@@ -1379,4 +1379,141 @@ class WinePairingEngineTest {
             )
         }
     }
+
+    // ==========================================
+    // Header vocabulary detection tests
+    // ==========================================
+
+    @Test
+    fun `should not match Red Wines by the Glass header as wine`() {
+        val text = """
+            Red Wines by the Glass
+            Cabernet Sauvignon 2020
+            Napa Valley
+            Glass $16
+        """.trimIndent()
+        val results = engine.recommendWines(text, FoodCategory.BEEF)
+        for (result in results) {
+            assertFalse(
+                "Should not match 'Red Wines by the Glass', got: ${result.originalText}",
+                result.originalText.contains("by the Glass", ignoreCase = true)
+            )
+        }
+        assertTrue("Should find actual wine underneath", results.isNotEmpty())
+    }
+
+    @Test
+    fun `should not match Premium White Selection header as wine`() {
+        val text = """
+            Premium White Selection
+            Chardonnay Reserve 2021
+            Sonoma Coast
+            Bottle $62
+        """.trimIndent()
+        val results = engine.recommendWines(text, FoodCategory.FISH)
+        for (result in results) {
+            assertFalse(
+                "Should not match 'Premium White Selection', got: ${result.originalText}",
+                result.originalText.contains("Premium White", ignoreCase = true)
+            )
+        }
+        assertTrue("Should find actual wine underneath", results.isNotEmpty())
+    }
+
+    @Test
+    fun `bare keyword entry should be skipped even with section context`() {
+        val text = """
+            SPARKLING
+            Champagne
+            Veuve Clicquot Brut NV
+            Glass $24 | Bottle $120
+        """.trimIndent()
+        val results = engine.recommendWines(text, FoodCategory.SEAFOOD)
+        for (result in results) {
+            assertFalse(
+                "Should not match bare 'Champagne' as wine, got: ${result.originalText}",
+                result.originalText.trim() == "Champagne"
+            )
+        }
+        assertTrue("Should find Veuve Clicquot underneath", results.isNotEmpty())
+        assertTrue(
+            "Result should be Veuve Clicquot, got: ${results[0].originalText}",
+            results[0].originalText.contains("Clicquot")
+        )
+    }
+
+    @Test
+    fun `real wine with generic words should not be treated as header`() {
+        val text = "Cabernet Sauvignon Reserve 2019 $55"
+        val results = engine.recommendWines(text, FoodCategory.BEEF)
+        assertTrue("Should match real wine even though it contains 'Reserve'", results.isNotEmpty())
+    }
+
+    @Test
+    fun `should not match Red Wine singular header as wine`() {
+        val text = """
+            Red Wine
+            Merlot 2020 $42
+        """.trimIndent()
+        val results = engine.recommendWines(text, FoodCategory.BEEF)
+        for (result in results) {
+            assertFalse(
+                "Should not match 'Red Wine' header, got: ${result.originalText}",
+                result.originalText.trim().equals("Red Wine", ignoreCase = true)
+            )
+        }
+        assertTrue("Should find Merlot wine underneath", results.isNotEmpty())
+    }
+
+    @Test
+    fun `should not match non-wine menu categories`() {
+        val text = """
+            Cocktails and Spirits
+            Negroni $15
+            Wine List
+            Merlot 2020 $42
+        """.trimIndent()
+        val results = engine.recommendWines(text, FoodCategory.BEEF)
+        for (result in results) {
+            assertFalse(
+                "Should not match 'Cocktails and Spirits', got: ${result.originalText}",
+                result.originalText.contains("Cocktails", ignoreCase = true)
+            )
+        }
+    }
+
+    @Test
+    fun `should not match House Wines header as wine`() {
+        val text = """
+            House Wines
+            Pinot Grigio 2022 $38
+            Merlot 2021 $36
+        """.trimIndent()
+        val results = engine.recommendWines(text, FoodCategory.FISH)
+        for (result in results) {
+            assertFalse(
+                "Should not match 'House Wines' header, got: ${result.originalText}",
+                result.originalText.trim().equals("House Wines", ignoreCase = true)
+            )
+        }
+        assertTrue("Should find actual wines underneath", results.size >= 1)
+    }
+
+    @Test
+    fun `should not match Featured White Wines header as wine`() {
+        val text = """
+            Featured White Wines
+            Sauvignon Blanc 2022
+            Marlborough
+            $48
+        """.trimIndent()
+        val results = engine.recommendWines(text, FoodCategory.FISH)
+        for (result in results) {
+            assertFalse(
+                "Should not match 'Featured White Wines', got: ${result.originalText}",
+                result.originalText.contains("Featured White", ignoreCase = true)
+            )
+        }
+        assertTrue("Should find wine underneath", results.isNotEmpty())
+    }
 }
