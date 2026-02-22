@@ -28,6 +28,8 @@ data class XWineEntry(
     val vintages: List<Int> = emptyList()
 )
 
+enum class DbMatchTier { EXACT, CLOSE }
+
 enum class VintageMatch {
     EXACT,           // OCR year found in wine's vintages list
     CLOSEST,         // OCR year not found, showing data for closest vintage
@@ -38,7 +40,8 @@ enum class VintageMatch {
 data class XWineMatchResult(
     val entry: XWineEntry,
     val vintageMatch: VintageMatch = VintageMatch.NOT_CHECKED,
-    val ocrYear: Int? = null
+    val ocrYear: Int? = null,
+    val matchTier: DbMatchTier = DbMatchTier.EXACT
 )
 
 class XWinesDatabase {
@@ -49,11 +52,19 @@ class XWinesDatabase {
     private var nameWordIndex: Map<String, MutableList<IndexEntry>> = emptyMap()
     private var wineWordCount: Map<XWineEntry, Int> = emptyMap()
     private var grapeIndex: Map<String, XWineEntry> = emptyMap()
+    // Sorted-word index: maps sorted significant words -> wines with that exact word set.
+    // Word order doesn't matter: "Viberti Barolo" and "Barolo Viberti" produce the same key.
+    private var sortedWordIndex: Map<String, MutableList<XWineEntry>> = emptyMap()
+    // All unique indexed words — used for fuzzy (Levenshtein) fallback matching
+    private var allIndexedWords: Set<String> = emptySet()
 
     private data class IndexEntry(val wine: XWineEntry, val totalNameWords: Int)
 
     // Words too common across wine names to be useful for matching.
     // These cause false matches: "Château Petrus" matching "Château Belair" etc.
+    // NOTE: "noir" and "blanc" are NOT stop words — they're essential grape
+    // qualifiers that distinguish Pinot Noir from Pinot Grigio, Sauvignon Blanc
+    // from Cabernet Sauvignon, etc.
     private val STOP_WORDS = setOf(
         // French/Italian/Spanish titles & connectors
         "château", "chateau", "domaine", "clos", "casa", "bodega", "tenuta",
@@ -68,7 +79,7 @@ class XWinesDatabase {
         // Generic descriptors
         "wine", "wines", "red", "white", "old", "vine", "vines",
         "special", "limited", "edition", "vintage", "bottle",
-        "brut", "sec", "dry", "sweet", "noir", "blanc"
+        "brut", "sec", "dry", "sweet"
     )
 
 
@@ -122,6 +133,25 @@ class XWinesDatabase {
         private const val BINARY_VERSION: Int = 3
 
         private val VINTAGE_REGEX = Regex("""\b(19|20)\d{2}\b""")
+        // Matches abbreviated vintages like '08, '19, ʼ14, '17, '15
+        // Supports ASCII apostrophe, modifier letter apostrophe, right/left single quotes
+        private val ABBREVIATED_VINTAGE_REGEX = Regex("(?:^|[\\s,])['\u02BC\u2018\u2019](\\d{2})\\b")
+
+        /**
+         * Extract a vintage year from text. Checks for 4-digit vintages first
+         * (2019, 1998), then abbreviated vintages ('08, '19).
+         * Abbreviated: ≥50 → 19xx, <50 → 20xx.
+         */
+        fun extractVintage(text: String): Int? {
+            // 4-digit vintage first
+            VINTAGE_REGEX.find(text)?.value?.toIntOrNull()?.let { return it }
+            // Abbreviated vintage fallback
+            ABBREVIATED_VINTAGE_REGEX.find(text)?.let { match ->
+                val twoDigit = match.groupValues[1].toIntOrNull() ?: return null
+                return if (twoDigit >= 50) 1900 + twoDigit else 2000 + twoDigit
+            }
+            return null
+        }
 
         fun findClosestVintage(vintages: List<Int>, targetYear: Int): Int? {
             if (vintages.isEmpty()) return null
@@ -301,6 +331,24 @@ class XWinesDatabase {
     // Indexes
     // ==========================================
 
+    /**
+     * Build a sorted-word key from a wine name. Strips accents, lowercases,
+     * removes punctuation, filters stop words and short words, sorts alphabetically.
+     * Word order is irrelevant: "Viberti Barolo" → "barolo viberti".
+     */
+    private fun sortedWordKey(name: String): String {
+        return TextNormalizer.normalizeForMatching(name)
+            .replace(Regex("[^a-z0-9 ]"), " ")
+            .replace(Regex("""\b(19|20)\d{2}\b"""), "")  // strip vintage years
+            .replace(Regex("""\b\d+\b"""), "")             // strip remaining numbers
+            .replace(Regex("\\s+"), " ")
+            .trim()
+            .split(" ")
+            .filter { it.length > 2 && it !in STOP_WORDS }
+            .sorted()
+            .joinToString(" ")
+    }
+
     private fun buildIndexes() {
         // Name word index: map each significant word -> list of (wine, totalWordCount)
         // Excludes stop words that are too common to be useful for matching
@@ -311,6 +359,7 @@ class XWinesDatabase {
                 .replace(Regex("[^a-z\\s]"), " ")
                 .split(Regex("\\s+"))
                 .filter { it.length > 2 && it !in STOP_WORDS }
+                .distinct()
             val entry = IndexEntry(wine, words.size)
             wordCounts[wine] = words.size
             for (word in words) {
@@ -319,6 +368,7 @@ class XWinesDatabase {
         }
         nameWordIndex = nameIdx
         wineWordCount = wordCounts
+        allIndexedWords = nameIdx.keys.toSet()
 
         // Grape index: map each grape name (normalized) -> first wine that has it
         val gIdx = HashMap<String, XWineEntry>(wines.size)
@@ -331,6 +381,17 @@ class XWinesDatabase {
             }
         }
         grapeIndex = gIdx
+
+        // Sorted-word index: map sorted significant words -> list of wines.
+        // Order-independent: "Viberti Barolo" and "Barolo Viberti" share key "barolo viberti".
+        val sortIdx = HashMap<String, MutableList<XWineEntry>>(wines.size)
+        for (wine in wines) {
+            val key = sortedWordKey(wine.wineName)
+            if (key.isNotBlank()) {
+                sortIdx.getOrPut(key) { mutableListOf() }.add(wine)
+            }
+        }
+        sortedWordIndex = sortIdx
     }
 
     // ==========================================
@@ -484,20 +545,20 @@ class XWinesDatabase {
      * Find an X-Wines entry matching OCR text using indexed lookups.
      * Uses name word index for O(candidates) matching instead of O(wines).
      *
-     * Requires that the majority of the database wine's distinctive name words
-     * appear in the OCR text. This prevents false matches where common words
-     * like "château" or "valley" cause unrelated wines to match.
+     * STRICT: requires ALL of the database wine's distinctive name words to
+     * appear in the OCR text (100% DB word coverage). This ensures only wines
+     * that truly match the OCR text are returned — no partial/fuzzy matches.
+     * Among ties, prefers the wine with the most matched words (most specific).
      */
     fun findMatch(ocrText: String): XWineEntry? {
         if (ocrText.isBlank()) return null
         val lower = TextNormalizer.normalizeForMatching(ocrText)
 
-        // Build query words with OCR-corrected variants for fuzzy matching
-        val rawWords = lower
+        // Build query words with OCR-corrected variants (digit→letter, rn↔m)
+        val queryWords = lower
             .replace(Regex("[^a-z0-9\\s]"), " ")
             .split(Regex("\\s+"))
             .filter { it.length > 2 }
-        val queryWords = rawWords
             .flatMap { TextNormalizer.ocrWordVariants(it) }
             .filter { it !in STOP_WORDS }
             .toSet()
@@ -511,32 +572,34 @@ class XWinesDatabase {
             }
         }
 
-        // Find best match: require >= 50% coverage of the wine name's distinctive
-        // words. For wines with 2+ distinctive words, require at least 2 matched.
-        // For wines with exactly 1 distinctive word (e.g., "Reserva Chardonnay"
-        // where "reserva" is a stop word), allow matchCount=1 at 100% coverage.
+        // STRICT matching: require 100% of the DB wine's distinctive words to
+        // appear in the OCR text. This prevents false matches where common words
+        // match unrelated wines.
         var bestMatch: XWineEntry? = null
-        var bestRatio = 0f
         var bestCount = 0
+        var bestRating = 0f
         for ((wine, matchCount) in candidates) {
             val totalWords = wineWordCount[wine] ?: continue
             if (totalWords == 0) continue
 
             val ratio = matchCount.toFloat() / totalWords
 
-            if (totalWords == 1) {
-                // 1-word wine: require exact match (100% coverage)
-                if (matchCount < 1 || ratio < 1.0f) continue
-            } else {
-                // 2+ word wine: require at least 2 matches and >= 50% coverage
-                if (matchCount < 2) continue
-                if (ratio < 0.5f) continue
-            }
+            // Require ALL distinctive words from DB wine to be present in OCR text
+            if (ratio < 1.0f) continue
 
-            // Prefer higher ratio, then higher absolute count
-            if (ratio > bestRatio || (ratio == bestRatio && matchCount > bestCount)) {
-                bestRatio = ratio
+            // Require at least 2 matched words. Single-word DB wines (e.g., one
+            // named "Tempranillo") would otherwise match ANY OCR text containing
+            // that word, causing false matches when the real wine is something
+            // like "Bodegas Tarón Tempranillo". Single-word wines can still match
+            // via Tier 1/2 (sorted-word index) or grape inference in Pass 2.
+            if (matchCount < 2) continue
+
+            // Prefer the most specific match (most words), then highest rating
+            val rating = wine.averageRating ?: 0f
+            if (matchCount > bestCount ||
+                (matchCount == bestCount && rating > bestRating)) {
                 bestCount = matchCount
+                bestRating = rating
                 bestMatch = wine
             }
         }
@@ -575,6 +638,16 @@ class XWinesDatabase {
         return null
     }
 
+    /**
+     * Given an OCR word (≥5 chars), find the closest word in allIndexedWords
+     * within Levenshtein distance 1. Used to recover OCR typos like
+     * "Cabemet" → "Cabernet", "Sauvingon" → "Sauvignon".
+     */
+    fun findFuzzyWordMatch(word: String): String? {
+        if (word.length < 5) return null
+        return TextNormalizer.fuzzyWordMatch(word, allIndexedWords, maxDistance = 1)
+    }
+
     fun findMatchWithVintage(ocrText: String): XWineMatchResult? {
         val entry = findMatch(ocrText) ?: return null
 
@@ -594,6 +667,99 @@ class XWinesDatabase {
         } else {
             XWineMatchResult(entry, VintageMatch.CLOSEST, ocrYear)
         }
+    }
+
+    /**
+     * Three-tier X-Wines lookup using only the wine name portion (not full entry description):
+     *   Tier 1 — Sorted-word match + exact vintage: the set of significant words from the
+     *             OCR name matches a database wine's word set, AND the vintage year is in
+     *             the wine's vintage list. Word order is irrelevant.
+     *   Tier 2 — Sorted-word match only: word sets match exactly, vintage ignored.
+     *             Picks the highest-rated entry among duplicates.
+     *   Tier 3 — Strict word-based match: ALL of the database wine's distinctive words
+     *             must appear in the OCR text. Handles cases where OCR has extra words
+     *             (e.g., "Gabbiano d'Oro Pinot Grigio" matching DB "Gabbiano Pinot Grigio").
+     *
+     * If no tier produces a match, returns null — no suggestion is made.
+     *
+     * @param nameText  The wine-name portion of the OCR entry (typically entry.displayName).
+     *                  Must NOT include description lines; those cause false positives.
+     * @param vintage   Year extracted from the full entry text, or null if none found.
+     */
+    fun findMatchTiered(nameText: String, vintage: Int?): XWineMatchResult? {
+        if (nameText.isBlank()) return null
+
+        // Build sorted-word key from the OCR name (order-independent matching)
+        val queryKey = sortedWordKey(nameText)
+
+        if (queryKey.isNotBlank()) {
+            val candidates = sortedWordIndex[queryKey]
+            if (!candidates.isNullOrEmpty()) {
+                // Tier 1: sorted-word match + exact vintage
+                if (vintage != null) {
+                    val exactVintage = candidates.firstOrNull { vintage in it.vintages }
+                    if (exactVintage != null) {
+                        return XWineMatchResult(exactVintage, VintageMatch.EXACT, vintage, DbMatchTier.EXACT)
+                    }
+                }
+                // Tier 2: sorted-word match, pick highest-rated entry among duplicates
+                val best = candidates.maxByOrNull { it.averageRating ?: 0f } ?: candidates.first()
+                val vintageMatch = when {
+                    vintage == null -> VintageMatch.NOT_CHECKED
+                    best.vintages.isEmpty() -> VintageMatch.NOT_IN_DATABASE
+                    else -> VintageMatch.CLOSEST
+                }
+                return XWineMatchResult(best, vintageMatch, vintage, DbMatchTier.EXACT)
+            }
+
+            // Tier 2.5: fuzzy sorted-word matching — correct at most ONE word
+            // via Levenshtein distance 1, then look up the corrected key in
+            // sortedWordIndex. Only for multi-word keys to avoid false matches.
+            // Recovers OCR typos like "Chateu Margaux" → "Chateau Margaux".
+            val queryWords = queryKey.split(" ")
+            if (queryWords.size >= 2) {
+                // Try correcting each word individually (at most one correction)
+                var fuzzyKey: String? = null
+                for (i in queryWords.indices) {
+                    val word = queryWords[i]
+                    if (word.length < 5) continue
+                    val corrected = findFuzzyWordMatch(word) ?: continue
+                    val correctedWords = queryWords.toMutableList()
+                    correctedWords[i] = corrected
+                    fuzzyKey = correctedWords.sorted().joinToString(" ")
+                    break  // only correct one word
+                }
+                if (fuzzyKey != null && fuzzyKey != queryKey) {
+                    val fuzzyCandidates = sortedWordIndex[fuzzyKey]
+                    if (!fuzzyCandidates.isNullOrEmpty()) {
+                        if (vintage != null) {
+                            val exactVintage = fuzzyCandidates.firstOrNull { vintage in it.vintages }
+                            if (exactVintage != null) {
+                                return XWineMatchResult(exactVintage, VintageMatch.EXACT, vintage, DbMatchTier.CLOSE)
+                            }
+                        }
+                        val best = fuzzyCandidates.maxByOrNull { it.averageRating ?: 0f } ?: fuzzyCandidates.first()
+                        val vm = when {
+                            vintage == null -> VintageMatch.NOT_CHECKED
+                            best.vintages.isEmpty() -> VintageMatch.NOT_IN_DATABASE
+                            else -> VintageMatch.CLOSEST
+                        }
+                        return XWineMatchResult(best, vm, vintage, DbMatchTier.CLOSE)
+                    }
+                }
+            }
+        }
+
+        // Tier 3: strict word-based match on the name text only (no description pollution).
+        // Requires 100% of DB wine's distinctive words to appear in OCR text.
+        val fuzzyMatch = findMatch(nameText) ?: return null
+        val vintageMatch = when {
+            vintage == null -> VintageMatch.NOT_CHECKED
+            fuzzyMatch.vintages.isEmpty() -> VintageMatch.NOT_IN_DATABASE
+            vintage in fuzzyMatch.vintages -> VintageMatch.EXACT
+            else -> VintageMatch.CLOSEST
+        }
+        return XWineMatchResult(fuzzyMatch, vintageMatch, vintage, DbMatchTier.CLOSE)
     }
 
     fun harmonizesWithFood(entry: XWineEntry, food: FoodCategory): Boolean {

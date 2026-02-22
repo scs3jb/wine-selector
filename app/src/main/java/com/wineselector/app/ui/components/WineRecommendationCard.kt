@@ -42,6 +42,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.wineselector.app.data.HighlightTier
 import com.wineselector.app.data.WineAlternative
+import com.wineselector.app.data.WinePairingEngine
 import com.wineselector.app.data.WineRecommendation
 import com.wineselector.app.data.XWineEntry
 
@@ -72,7 +73,12 @@ fun WineRecommendationCard(
                 )
                 Spacer(modifier = Modifier.width(8.dp))
                 Text(
-                    text = "Top Pick",
+                    text = when (recommendation.matchSource) {
+                        WinePairingEngine.MatchSource.XWINES_CLOSE -> "Top Pick \u2014 Close Match"
+                        WinePairingEngine.MatchSource.KEYWORD,
+                        WinePairingEngine.MatchSource.SECTION_CONTEXT -> "Top Pick \u2014 Grape Match \uD83C\uDF47"
+                        else -> "Top Pick"
+                    },
                     style = MaterialTheme.typography.titleMedium,
                     color = MaterialTheme.colorScheme.onSecondaryContainer
                 )
@@ -85,6 +91,23 @@ fun WineRecommendationCard(
                 style = MaterialTheme.typography.headlineMedium,
                 color = MaterialTheme.colorScheme.onSecondaryContainer
             )
+
+            if (recommendation.matchSource == WinePairingEngine.MatchSource.XWINES_CLOSE) {
+                Text(
+                    text = "Similar wine found in database",
+                    style = MaterialTheme.typography.bodySmall,
+                    fontStyle = FontStyle.Italic,
+                    color = MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.7f)
+                )
+            } else if (recommendation.matchSource == WinePairingEngine.MatchSource.KEYWORD ||
+                recommendation.matchSource == WinePairingEngine.MatchSource.SECTION_CONTEXT) {
+                Text(
+                    text = "No exact database match found",
+                    style = MaterialTheme.typography.bodySmall,
+                    fontStyle = FontStyle.Italic,
+                    color = MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.7f)
+                )
+            }
 
             if (recommendation.price != null && recommendation.price != "Not visible") {
                 Spacer(modifier = Modifier.height(4.dp))
@@ -123,7 +146,11 @@ fun WineRecommendationCard(
                 )
                 Spacer(modifier = Modifier.height(12.dp))
 
-                XWinesDetails(xWine)
+                if (recommendation.matchSource == WinePairingEngine.MatchSource.XWINES_CLOSE) {
+                    XWinesDetails(xWine, headerOverride = "Close Match \u2014 similar wine in database")
+                } else {
+                    XWinesDetails(xWine)
+                }
             }
 
             // Clickable alternatives
@@ -133,6 +160,24 @@ fun WineRecommendationCard(
                     color = MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.2f)
                 )
                 Spacer(modifier = Modifier.height(12.dp))
+
+                // Check if all results are keyword-only
+                val allKeywordOnly = (recommendation.matchSource == WinePairingEngine.MatchSource.KEYWORD ||
+                    recommendation.matchSource == WinePairingEngine.MatchSource.SECTION_CONTEXT) &&
+                    recommendation.alternatives.all {
+                        it.matchSource == WinePairingEngine.MatchSource.KEYWORD ||
+                            it.matchSource == WinePairingEngine.MatchSource.SECTION_CONTEXT
+                    }
+
+                if (allKeywordOnly) {
+                    Text(
+                        text = "No exact database matches found. Showing grape-based recommendations.",
+                        style = MaterialTheme.typography.bodySmall,
+                        fontStyle = FontStyle.Italic,
+                        color = MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.7f)
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                }
 
                 Text(
                     text = "Other options:",
@@ -170,26 +215,20 @@ fun WineRecommendationCard(
 @Composable
 private fun XWinesDetails(
     xWine: XWineEntry,
-    compact: Boolean = false
+    compact: Boolean = false,
+    headerOverride: String? = null
 ) {
     if (!compact) {
         Text(
-            text = "Wine Database",
+            text = headerOverride ?: "Wine Database Details",
             style = MaterialTheme.typography.titleSmall,
             fontWeight = FontWeight.Bold,
-            color = MaterialTheme.colorScheme.onSecondaryContainer
-        )
-        Spacer(modifier = Modifier.height(4.dp))
-        Text(
-            text = xWine.wineName,
-            style = MaterialTheme.typography.bodyMedium,
-            fontWeight = FontWeight.Medium,
             color = MaterialTheme.colorScheme.onSecondaryContainer
         )
         Spacer(modifier = Modifier.height(8.dp))
     } else {
         Text(
-            text = xWine.wineName,
+            text = "Database Details",
             style = MaterialTheme.typography.bodySmall,
             fontWeight = FontWeight.Medium,
             color = MaterialTheme.colorScheme.onSecondaryContainer
@@ -298,8 +337,14 @@ private fun AlternativeWineRow(
                 TierDot(tier = highlightTier, size = 10.dp)
                 Spacer(modifier = Modifier.width(8.dp))
                 Column(modifier = Modifier.weight(1f)) {
+                    val altDisplayName = when (alternative.matchSource) {
+                        WinePairingEngine.MatchSource.XWINES_CLOSE -> "${alternative.wineName} (close match)"
+                        WinePairingEngine.MatchSource.KEYWORD,
+                        WinePairingEngine.MatchSource.SECTION_CONTEXT -> "\uD83C\uDF47 ${alternative.wineName}"
+                        else -> alternative.wineName
+                    }
                     Text(
-                        text = alternative.wineName,
+                        text = altDisplayName,
                         style = MaterialTheme.typography.bodyMedium,
                         fontWeight = FontWeight.Medium,
                         color = MaterialTheme.colorScheme.onTertiaryContainer
@@ -348,7 +393,11 @@ private fun AlternativeWineRow(
                 val xWine = alternative.xWinesMatch
                 if (xWine != null) {
                     Spacer(modifier = Modifier.height(8.dp))
-                    XWinesDetails(xWine, compact = true)
+                    if (alternative.matchSource == WinePairingEngine.MatchSource.XWINES_CLOSE) {
+                        XWinesDetails(xWine, compact = true, headerOverride = "Close Match Details")
+                    } else {
+                        XWinesDetails(xWine, compact = true)
+                    }
                 }
             }
         }

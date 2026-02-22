@@ -105,4 +105,53 @@ object TextNormalizer {
         }
         return sb.toString()
     }
+
+    /**
+     * Standard Levenshtein edit distance (DP algorithm).
+     * Returns the minimum number of single-character edits (insertions,
+     * deletions, substitutions) to transform [a] into [b].
+     */
+    fun levenshteinDistance(a: String, b: String): Int {
+        val m = a.length
+        val n = b.length
+        // Use single-row DP to save memory
+        var prev = IntArray(n + 1) { it }
+        var curr = IntArray(n + 1)
+        for (i in 1..m) {
+            curr[0] = i
+            for (j in 1..n) {
+                val cost = if (a[i - 1] == b[j - 1]) 0 else 1
+                curr[j] = minOf(
+                    prev[j] + 1,       // deletion
+                    curr[j - 1] + 1,   // insertion
+                    prev[j - 1] + cost  // substitution
+                )
+            }
+            val tmp = prev; prev = curr; curr = tmp
+        }
+        return prev[n]
+    }
+
+    /**
+     * Find the closest match for [word] among [candidates] within [maxDistance]
+     * edit distance. Only considers words >= 5 chars to avoid false positives
+     * on short words (e.g., "del" matching "dei").
+     *
+     * Returns the best matching candidate, or null if none within threshold.
+     */
+    fun fuzzyWordMatch(word: String, candidates: Collection<String>, maxDistance: Int = 1): String? {
+        if (word.length < 5) return null
+        var bestMatch: String? = null
+        var bestDist = maxDistance + 1
+        for (candidate in candidates) {
+            // Skip candidates with length difference > maxDistance (impossible to match)
+            if (kotlin.math.abs(candidate.length - word.length) > maxDistance) continue
+            val dist = levenshteinDistance(word, candidate)
+            if (dist in 1 until bestDist) {
+                bestDist = dist
+                bestMatch = candidate
+            }
+        }
+        return bestMatch
+    }
 }

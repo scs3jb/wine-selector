@@ -7,7 +7,8 @@ data class WineAlternative(
     val reason: String,
     val xWinesMatch: XWineEntry?,
     val vintageMatch: VintageMatch = VintageMatch.NOT_CHECKED,
-    val vintageNote: String? = null
+    val vintageNote: String? = null,
+    val matchSource: WinePairingEngine.MatchSource? = null
 )
 
 data class WineRecommendation(
@@ -19,5 +20,6 @@ data class WineRecommendation(
     val xWinesMatch: XWineEntry? = null,
     val vintageMatch: VintageMatch = VintageMatch.NOT_CHECKED,
     val vintageNote: String? = null,
-    val alternatives: List<WineAlternative> = emptyList()
+    val alternatives: List<WineAlternative> = emptyList(),
+    val matchSource: WinePairingEngine.MatchSource? = null
 )

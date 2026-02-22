@@ -14,6 +14,7 @@ import com.wineselector.app.data.WinePairingEngine
 import com.wineselector.app.data.WinePreferences
 import com.wineselector.app.data.WinePreferencesStore
 import com.wineselector.app.data.WineRecommendation
+import com.wineselector.app.data.TextNormalizer
 import com.wineselector.app.data.XWinesDatabase
 import com.wineselector.app.data.XWinesDownloader
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -271,16 +272,25 @@ class WineSelectorViewModel(application: Application) : AndroidViewModel(applica
                 2 -> HighlightTier.BRONZE
                 else -> HighlightTier.RED
             }
-            val matchText = (scored.displayName ?: scored.originalText).lowercase()
+            val matchText = (scored.ocrHighlightText ?: scored.originalText).lowercase()
+            val matchTextNormalized = TextNormalizer.normalizeForMatching(matchText)
             val matchedBoxes = mutableListOf<Rect>()
 
             for ((lineIdx, ocrLine) in ocrResult.lines.withIndex()) {
                 if (lineIdx in usedLineIndices) continue
-                val lineLower = ocrLine.text.trim().lowercase()
-                if (lineLower.length > 4 && matchText.contains(lineLower)) {
-                    ocrLine.boundingBox?.let {
-                        matchedBoxes.add(it)
-                        usedLineIndices.add(lineIdx)
+                val lineText = ocrLine.text.trim()
+                // Skip pure price lines (no alphabetical content)
+                if (lineText.none { it.isLetter() }) continue
+                val lineLower = lineText.lowercase()
+                if (lineLower.length > 4) {
+                    // Try exact substring match first, then accent-normalized fallback
+                    val matches = matchText.contains(lineLower) ||
+                        matchTextNormalized.contains(TextNormalizer.normalizeForMatching(lineLower))
+                    if (matches) {
+                        ocrLine.boundingBox?.let {
+                            matchedBoxes.add(it)
+                            usedLineIndices.add(lineIdx)
+                        }
                     }
                 }
             }

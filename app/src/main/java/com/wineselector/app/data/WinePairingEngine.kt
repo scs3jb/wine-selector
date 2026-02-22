@@ -6,7 +6,7 @@ package com.wineselector.app.data
  */
 class WinePairingEngine(private val xWinesDb: XWinesDatabase? = null) {
 
-    enum class MatchSource { XWINES, KEYWORD, SECTION_CONTEXT }
+    enum class MatchSource { XWINES_EXACT, XWINES_CLOSE, KEYWORD, SECTION_CONTEXT }
 
     data class ScoredWine(
         val originalText: String,
@@ -18,7 +18,8 @@ class WinePairingEngine(private val xWinesDb: XWinesDatabase? = null) {
         val displayName: String? = null,
         val vintageMatch: VintageMatch = VintageMatch.NOT_CHECKED,
         val ocrYear: Int? = null,
-        val matchSource: MatchSource = MatchSource.KEYWORD
+        val matchSource: MatchSource = MatchSource.KEYWORD,
+        val ocrHighlightText: String? = null
     )
 
     /**
@@ -496,8 +497,9 @@ class WinePairingEngine(private val xWinesDb: XWinesDatabase? = null) {
     private fun isSectionHeader(line: String): Boolean {
         val lower = line.lowercase().trim()
 
-        // Lines with a vintage year, price, or volume are wine entries
+        // Lines with a vintage year (full or abbreviated), price, or volume are wine entries
         if (VINTAGE_PATTERN.containsMatchIn(line)) return false
+        if (XWinesDatabase.extractVintage(line) != null) return false
         if (lineHasPrice(line)) return false
         if (VOLUME_PATTERN.containsMatchIn(line)) return false
 
@@ -558,6 +560,7 @@ class WinePairingEngine(private val xWinesDb: XWinesDatabase? = null) {
     private fun isBareKeywordLine(line: String): Boolean {
         val lower = TextNormalizer.normalizeForMatching(line).trim()
         if (VINTAGE_PATTERN.containsMatchIn(line)) return false
+        if (XWinesDatabase.extractVintage(line) != null) return false
         if (lineHasPrice(line)) return false
         if (VOLUME_PATTERN.containsMatchIn(line)) return false
 
@@ -588,8 +591,9 @@ class WinePairingEngine(private val xWinesDb: XWinesDatabase? = null) {
         if (PRICE_LINE_PATTERN.containsMatchIn(line) && lineHasPrice(line)) {
             return false
         }
-        // Has a vintage year — almost certainly a wine entry
+        // Has a vintage year (full or abbreviated) — almost certainly a wine entry
         if (VINTAGE_PATTERN.containsMatchIn(line)) return true
+        if (XWinesDatabase.extractVintage(line) != null) return true
         // Contains "NV" (non-vintage) — wine label
         if (line.contains(Regex("""\bNV\b"""))) return true
         // Lines composed entirely of generic header vocabulary are not wine entries,
@@ -610,9 +614,10 @@ class WinePairingEngine(private val xWinesDb: XWinesDatabase? = null) {
      */
     private fun isBareKeywordEntry(entry: WineEntry): Boolean {
         val text = entry.combinedText
-        // Has price, vintage, NV, or volume → not bare
+        // Has price, vintage (full or abbreviated), NV, or volume → not bare
         if (lineHasPrice(text)) return false
         if (VINTAGE_PATTERN.containsMatchIn(text)) return false
+        if (XWinesDatabase.extractVintage(text) != null) return false
         if (text.contains(Regex("""\bNV\b"""))) return false
         if (VOLUME_PATTERN.containsMatchIn(text)) return false
 
@@ -688,8 +693,9 @@ class WinePairingEngine(private val xWinesDb: XWinesDatabase? = null) {
         // Lines that are just a price (e.g., "$55") don't start entries
         if (line.trim().matches(Regex("""\$\s*\d+\.?\d*"""))) return false
 
-        // Has a vintage year — strong indicator of a new wine entry
+        // Has a vintage year (full or abbreviated) — strong indicator of a new wine entry
         if (VINTAGE_PATTERN.containsMatchIn(line)) return true
+        if (XWinesDatabase.extractVintage(line) != null) return true
 
         // Has a price AND some text — likely a self-contained wine line
         if (lineHasPrice(line)) {
@@ -882,11 +888,12 @@ class WinePairingEngine(private val xWinesDb: XWinesDatabase? = null) {
     /**
      * Analyze extracted wine list text and return scored recommendations for the given food.
      *
-     * Two-pass architecture:
-     * 1. X-Wines database matching (when available) — matches exact wine names with vintage awareness
-     * 2. Keyword fallback — for entries not matched by X-Wines, uses grape/region keyword profiles
-     *
-     * Falls back entirely to keyword matching when no X-Wines database is loaded.
+     * Two modes:
+     * - DB mode (xWinesDb != null): ONLY wines that match the X-Wines database are returned.
+     *   No keyword fallback — this prevents tasting-note descriptions from producing matches.
+     *   Display names come directly from the database (canonical wine names).
+     * - Keyword mode (xWinesDb == null): Keyword/grape matching only. Display names are
+     *   derived from the OCR entry text.
      */
     fun recommendWines(
         extractedText: String,
@@ -896,26 +903,36 @@ class WinePairingEngine(private val xWinesDb: XWinesDatabase? = null) {
         val entries = coalesceEntries(extractedText.lines())
         val scored = mutableListOf<ScoredWine>()
 
-        // === Pass 1: X-Wines database matching (when available) ===
-        val xWinesMatchedKeys = mutableSetOf<String>()
-
         if (xWinesDb != null) {
-            for ((entry, sectionKw) in entries) {
-                // Skip bare keyword entries — they're labels, not wines
+            // === DB MODE: Three-tier matching ===
+            // Pass 1: Match entries against the X-Wines database (exact + close).
+            // Pass 2: Keyword fallback for unmatched entries.
+            val matchedEntries = mutableSetOf<Int>()
+
+            // --- Pass 1: DB matching ---
+            for ((idx, pair) in entries.withIndex()) {
+                val (entry, sectionKw) = pair
                 if (isBareKeywordEntry(entry)) continue
-                val matchResult = xWinesDb.findMatchWithVintage(entry.combinedText) ?: continue
+
+                // Match only on the wine-name portion (entry.displayName), not the full
+                // description. Using combinedText would cause description text like
+                // "a rich Merlot blend" to falsely match "Origem Merlot" by name.
+                val ocrVintage = XWinesDatabase.extractVintage(entry.combinedText)
+                val cleanedName = cleanNameForMatching(entry.displayName)
+                val matchResult = xWinesDb.findMatchTiered(cleanedName, ocrVintage) ?: continue
                 val xEntry = matchResult.entry
 
-                // Apply user preference filters
                 if (!preferences.acceptsType(xEntry.type)) continue
                 if (!preferences.acceptsGrapes(xEntry.grapes)) continue
                 if (!preferences.acceptsPrice(entry.priceText)) continue
 
+                matchedEntries.add(idx)
+
                 val harmonizes = xWinesDb.harmonizesWithFood(xEntry, food)
                 val grapeStr = if (xEntry.grapes.isNotEmpty()) xEntry.grapes.joinToString(", ") else xEntry.type
 
-                // Compute stable base score from grape inference, keywords,
-                // and section context — same sources Pass 2 would use.
+                // Base score: grape inference from DB entry grapes, boosted by OCR keyword
+                // matches and section context (for scoring only — not for wine identification).
                 val grapeInference = inferScoreFromGrapes(xEntry.grapes, food)
                 val grapeScore = grapeInference?.first ?: 0
 
@@ -962,16 +979,12 @@ class WinePairingEngine(private val xWinesDb: XWinesDatabase? = null) {
                     }
                 }
 
-                // Apply harmonization as a bonus on top of the stable base,
-                // so rankings are anchored by keyword scores (deterministic)
-                // and X-Wines only fine-tunes.
                 val score: Int
                 val reason: String
                 if (harmonizes && baseScore > 0) {
                     score = minOf(baseScore + 2, 10)
                     reason = baseReason
                 } else if (harmonizes) {
-                    // No keyword/grape base — fall back to X-Wines rating
                     score = when {
                         xEntry.averageRating != null && xEntry.averageRating >= 4.0f -> 8
                         xEntry.averageRating != null && xEntry.averageRating >= 3.5f -> 7
@@ -992,13 +1005,14 @@ class WinePairingEngine(private val xWinesDb: XWinesDatabase? = null) {
                         "pairing unconfirmed, but a highly rated wine"
                 }
 
-                val entryKey = entry.combinedText.lowercase().replace(Regex("[^a-z]"), "")
-                xWinesMatchedKeys.add(entryKey)
+                val dbMatchSource = when (matchResult.matchTier) {
+                    DbMatchTier.EXACT -> MatchSource.XWINES_EXACT
+                    DbMatchTier.CLOSE -> MatchSource.XWINES_CLOSE
+                }
 
-                // Always use the menu text as display name — X-Wines is for
-                // enrichment only, the user needs to find the wine on their menu
-                val displayName = bestWineDisplayName(entry) ?: entry.displayName
-
+                // Display name: use the canonical X-Wines database name. This ensures
+                // the displayed wine is always accurate and matches the DB metadata
+                // (grapes, region, body, etc.) shown in the details section.
                 scored.add(ScoredWine(
                     originalText = entry.combinedText,
                     score = score,
@@ -1006,104 +1020,130 @@ class WinePairingEngine(private val xWinesDb: XWinesDatabase? = null) {
                     xWinesMatch = xEntry,
                     fullEntryText = entry.combinedText,
                     priceText = entry.priceText,
-                    displayName = displayName,
+                    displayName = xEntry.wineName,
                     vintageMatch = matchResult.vintageMatch,
                     ocrYear = matchResult.ocrYear,
-                    matchSource = MatchSource.XWINES
+                    matchSource = dbMatchSource,
+                    ocrHighlightText = entry.combinedText
                 ))
             }
-        }
 
-        // === Pass 2: Keyword fallback (for entries not matched by X-Wines) ===
-        for ((entry, sectionKw) in entries) {
-            val entryKey = entry.combinedText.lowercase().replace(Regex("[^a-z]"), "")
-            if (entryKey in xWinesMatchedKeys) continue
+            // --- Pass 2: Keyword fallback for unmatched entries ---
+            for ((idx, pair) in entries.withIndex()) {
+                if (idx in matchedEntries) continue
+                val (entry, sectionKw) = pair
+                if (isBareKeywordEntry(entry)) continue
+                if (!preferences.acceptsPrice(entry.priceText)) continue
 
-            // Apply price filter to keyword matches too
-            if (!preferences.acceptsPrice(entry.priceText)) continue
+                val lower = TextNormalizer.normalizeForMatching(entry.combinedText)
+                val lowerOcrCorrected = TextNormalizer.normalizeForOcrMatching(entry.combinedText)
+                var bestScore = 0
+                var bestReason = ""
 
-            // Skip entries that are just bare wine keywords (e.g., "Champagne",
-            // "Merlot") — these are section labels that slipped past header
-            // detection, not specific wine listings.
-            if (isBareKeywordEntry(entry)) continue
-
-            val lower = TextNormalizer.normalizeForMatching(entry.combinedText)
-            val lowerOcrCorrected = TextNormalizer.normalizeForOcrMatching(entry.combinedText)
-            var bestScore = 0
-            var bestReason = ""
-
-            for ((keyword, profile) in wineKeywords) {
-                if (lower.contains(keyword) || lowerOcrCorrected.contains(keyword)) {
-                    // Apply type filter for keyword matches
-                    if (profile.type != null && !preferences.allowedTypes.contains(profile.type)) continue
-                    val score = profile.scores[food] ?: 0
-                    if (score > bestScore) {
-                        bestScore = score
-                        bestReason = profile.description
+                for ((keyword, profile) in wineKeywords) {
+                    if (lower.contains(keyword) || lowerOcrCorrected.contains(keyword)) {
+                        if (profile.type != null && !preferences.allowedTypes.contains(profile.type)) continue
+                        val s = profile.scores[food] ?: 0
+                        if (s > bestScore) {
+                            bestScore = s
+                            bestReason = profile.description
+                        }
                     }
                 }
-            }
 
-            // Section context fallback
-            if (bestScore == 0 && sectionKw != null && looksLikeWineEntry(entry.displayName)) {
-                val profile = wineKeywords[sectionKw]
-                if (profile != null) {
-                    // Apply type filter
-                    if (profile.type == null || preferences.allowedTypes.contains(profile.type)) {
+                // Section context fallback
+                if (bestScore == 0 && sectionKw != null && looksLikeWineEntry(entry.displayName)) {
+                    val profile = wineKeywords[sectionKw]
+                    if (profile != null) {
+                        if (profile.type == null || preferences.allowedTypes.contains(profile.type)) {
+                            val s = profile.scores[food] ?: 0
+                            if (s > 0) {
+                                bestScore = s
+                                bestReason = profile.description
+                            }
+                        }
+                    }
+                }
+
+                if (bestScore > 0) {
+                    val matchSource =
+                        if (sectionKw != null && bestReason == (wineKeywords[sectionKw]?.description ?: ""))
+                            MatchSource.SECTION_CONTEXT else MatchSource.KEYWORD
+
+                    val rawDisplayName = bestWineDisplayName(entry) ?: entry.displayName
+                    val displayName = cleanNameForMatching(rawDisplayName)
+
+                    scored.add(ScoredWine(
+                        originalText = entry.combinedText,
+                        score = bestScore,
+                        reason = bestReason,
+                        xWinesMatch = null,
+                        fullEntryText = entry.combinedText,
+                        priceText = entry.priceText,
+                        displayName = displayName,
+                        matchSource = matchSource,
+                        ocrHighlightText = entry.combinedText
+                    ))
+                }
+            }
+        } else {
+            // === KEYWORD MODE: No database loaded — keyword/grape matching only ===
+            for ((entry, sectionKw) in entries) {
+                if (!preferences.acceptsPrice(entry.priceText)) continue
+                if (isBareKeywordEntry(entry)) continue
+
+                val lower = TextNormalizer.normalizeForMatching(entry.combinedText)
+                val lowerOcrCorrected = TextNormalizer.normalizeForOcrMatching(entry.combinedText)
+                var bestScore = 0
+                var bestReason = ""
+
+                for ((keyword, profile) in wineKeywords) {
+                    if (lower.contains(keyword) || lowerOcrCorrected.contains(keyword)) {
+                        if (profile.type != null && !preferences.allowedTypes.contains(profile.type)) continue
                         val score = profile.scores[food] ?: 0
-                        if (score > 0) {
+                        if (score > bestScore) {
                             bestScore = score
                             bestReason = profile.description
                         }
                     }
                 }
-            }
 
-            // X-Wines grape fallback — when neither keyword nor section context matched,
-            // try identifying the wine via X-Wines name match first, then grape match
-            // as a last resort, and infer score from its grapes
-            if (bestScore == 0 && xWinesDb != null) {
-                val xMatch = xWinesDb.findMatch(entry.combinedText)
-                    ?: xWinesDb.findMatchByGrape(entry.combinedText)
-                if (xMatch != null && preferences.acceptsGrapes(xMatch.grapes) &&
-                    preferences.acceptsType(xMatch.type)) {
-                    val grapeInference = inferScoreFromGrapes(xMatch.grapes, food)
-                    if (grapeInference != null) {
-                        bestScore = grapeInference.first
-                        bestReason = grapeInference.second
+                // Section context fallback
+                if (bestScore == 0 && sectionKw != null && looksLikeWineEntry(entry.displayName)) {
+                    val profile = wineKeywords[sectionKw]
+                    if (profile != null) {
+                        if (profile.type == null || preferences.allowedTypes.contains(profile.type)) {
+                            val score = profile.scores[food] ?: 0
+                            if (score > 0) {
+                                bestScore = score
+                                bestReason = profile.description
+                            }
+                        }
                     }
                 }
-            }
 
-            if (bestScore > 0) {
-                // Still do X-Wines lookup for enrichment data (but scoring is keyword-based)
-                var xMatch = xWinesDb?.findMatch(entry.combinedText)
-                // Filter enrichment match by grape preferences
-                if (xMatch != null && !preferences.acceptsGrapes(xMatch.grapes)) {
-                    xMatch = null
+                if (bestScore > 0) {
+                    val matchSource =
+                        if (sectionKw != null && bestReason == (wineKeywords[sectionKw]?.description ?: ""))
+                            MatchSource.SECTION_CONTEXT else MatchSource.KEYWORD
+
+                    val rawDisplayName = bestWineDisplayName(entry) ?: entry.displayName
+                    val displayName = cleanNameForMatching(rawDisplayName)
+
+                    scored.add(
+                        ScoredWine(
+                            originalText = entry.combinedText,
+                            score = bestScore,
+                            reason = bestReason,
+                            xWinesMatch = null,
+                            fullEntryText = entry.combinedText,
+                            priceText = entry.priceText,
+                            displayName = displayName,
+                            matchSource = matchSource,
+                            ocrHighlightText = entry.combinedText
+                        )
+                    )
                 }
-                if (xMatch != null && xWinesDb?.harmonizesWithFood(xMatch, food) == true) {
-                    bestScore = minOf(bestScore + 1, 10)
-                }
-
-                val matchSource = if (sectionKw != null && bestReason == (wineKeywords[sectionKw]?.description ?: ""))
-                    MatchSource.SECTION_CONTEXT else MatchSource.KEYWORD
-
-                // Build the best display name — prefer a line with the wine
-                // keyword and a vintage/producer, falling back to the entry's
-                // display name (first non-price line)
-                val bestDisplayName = bestWineDisplayName(entry) ?: entry.displayName
-
-                scored.add(ScoredWine(
-                    originalText = entry.combinedText,
-                    score = bestScore,
-                    reason = bestReason,
-                    xWinesMatch = xMatch,
-                    fullEntryText = entry.combinedText,
-                    priceText = entry.priceText,
-                    displayName = bestDisplayName,
-                    matchSource = matchSource
-                ))
             }
         }
 
@@ -1147,7 +1187,8 @@ class WinePairingEngine(private val xWinesDb: XWinesDatabase? = null) {
                 reason = scored.reason,
                 xWinesMatch = scored.xWinesMatch,
                 vintageMatch = scored.vintageMatch,
-                vintageNote = buildVintageNote(scored)
+                vintageNote = buildVintageNote(scored),
+                matchSource = scored.matchSource
             )
         }
 
@@ -1162,7 +1203,8 @@ class WinePairingEngine(private val xWinesDb: XWinesDatabase? = null) {
             xWinesMatch = top.xWinesMatch,
             vintageMatch = top.vintageMatch,
             vintageNote = buildVintageNote(top),
-            alternatives = alts
+            alternatives = alts,
+            matchSource = top.matchSource
         )
     }
 
@@ -1186,16 +1228,23 @@ class WinePairingEngine(private val xWinesDb: XWinesDatabase? = null) {
 
     /**
      * Extract the best display name for a keyword-matched wine entry.
-     * Prefers lines that contain a wine keyword along with a vintage or
-     * producer name, then falls back to the first line with a vintage,
-     * then the first non-price line. Strips trailing price info.
+     *
+     * Pass 1: a single line with both keyword + vintage (e.g., "Merlot Reserve 2019").
+     * Pass 2: combine the first non-price/non-keyword line (producer name) with the
+     *         first keyword line — e.g., "Terrazas de los Andes Reserva" + "Cabernet
+     *         Sauvignon" → "Terrazas de los Andes Reserva Cabernet Sauvignon".
+     * Pass 3: just the first line that contains a keyword (not bare).
+     * Fallback: null → caller uses entry.displayName (first non-price line).
      */
     private fun bestWineDisplayName(entry: WineEntry): String? {
         val lines = entry.lines
         if (lines.size <= 1) return null // single-line entry — default is fine
 
-        // First pass: a line containing a wine keyword + vintage (e.g., "Merlot Reserve 2019")
+        // Pass 1: a line containing a wine keyword + vintage (e.g., "Merlot Reserve 2019").
+        // Cap at 10 words — longer lines are tasting-note descriptions, not wine names.
         for (line in lines) {
+            val words = line.trim().split(Regex("\\s+")).filter { it.isNotEmpty() }
+            if (words.size > 10) continue
             val lower = TextNormalizer.normalizeForMatching(line)
             val hasKeyword = wineKeywords.keys.any { lower.contains(it) }
             val hasVintage = VINTAGE_PATTERN.containsMatchIn(line)
@@ -1204,26 +1253,43 @@ class WinePairingEngine(private val xWinesDb: XWinesDatabase? = null) {
             }
         }
 
-        // Second pass: first line with a vintage year that isn't just a price
-        for (line in lines) {
-            if (VINTAGE_PATTERN.containsMatchIn(line)) {
-                val isPriceOnly = PRICE_LINE_PATTERN.containsMatchIn(line) && lineHasPrice(line)
-                if (!isPriceOnly) {
-                    return cleanDisplayName(line)
+        // Pass 2: combine producer-name line (no keyword) with the first SHORT keyword line.
+        // This handles "Terrazas de los Andes Reserva\nCabernet Sauvignon\nMendoza 2019"
+        // → "Terrazas de los Andes Reserva Cabernet Sauvignon".
+        // The keyword line must be ≤ 6 words to avoid merging with description paragraphs.
+        val firstNonPrice = lines.firstOrNull {
+            !(PRICE_LINE_PATTERN.containsMatchIn(it) && lineHasPrice(it))
+        }
+        if (firstNonPrice != null) {
+            val firstLower = TextNormalizer.normalizeForMatching(firstNonPrice)
+            val firstHasKeyword = wineKeywords.keys.any { firstLower.contains(it) }
+            if (!firstHasKeyword) {
+                for (line in lines.drop(1)) {
+                    if (PRICE_LINE_PATTERN.containsMatchIn(line) && lineHasPrice(line)) continue
+                    val words = line.trim().split(Regex("\\s+")).filter { it.isNotEmpty() }
+                    if (words.size > 6) continue  // Skip — likely a description paragraph
+                    val lower = TextNormalizer.normalizeForMatching(line)
+                    val hasKeyword = wineKeywords.keys.any { lower.contains(it) }
+                    if (hasKeyword && words.size > 1) {
+                        val combined = "${firstNonPrice.trim()} ${line.trim()}"
+                        return cleanDisplayName(combined)
+                    }
                 }
             }
         }
 
-        // Third pass: first line with a wine keyword that isn't a bare keyword
+        // Pass 3: first short line with a wine keyword that isn't a bare keyword
         for (line in lines) {
+            val words = line.trim().split(Regex("\\s+")).filter { it.isNotEmpty() }
+            if (words.size > 10) continue
             val lower = TextNormalizer.normalizeForMatching(line)
             val hasKeyword = wineKeywords.keys.any { lower.contains(it) }
-            if (hasKeyword && line.trim().split(Regex("\\s+")).size > 1) {
+            if (hasKeyword && words.size > 1) {
                 return cleanDisplayName(line)
             }
         }
 
-        return null // use default
+        return null // use default (entry.displayName = first non-price line)
     }
 
     /**
@@ -1240,6 +1306,36 @@ class WinePairingEngine(private val xWinesDb: XWinesDatabase? = null) {
             }
             .trim()
             .ifEmpty { line.trim() }
+    }
+
+    /**
+     * Clean a wine name for DB matching — strips menu numbering, inline country
+     * names, and embedded prices that pollute the display name from OCR.
+     *
+     * Example: "12. Malbec "d'A" FRANCE 790 10.50 30.00"
+     *        → "Malbec "d'A""
+     */
+    private fun cleanNameForMatching(name: String): String {
+        return name
+            // Strip leading menu numbering: "12.", "12)", "12 -", "#12"
+            .replace(Regex("""^[#]?\d{1,3}[.):\-]?\s*"""), "")
+            // Strip inline country names (case-insensitive) — menu metadata, not wine name parts
+            .replace(Regex("""\b(?:FRANCE|ITALY|SPAIN|ARGENTINA|CHILE|AUSTRALIA|PORTUGAL|GERMANY|AUSTRIA|SOUTH\s+AFRICA|NEW\s+ZEALAND|UNITED\s+STATES|USA|BRAZIL|URUGUAY|GREECE|HUNGARY|LEBANON|CROATIA|SLOVENIA|GEORGIA)\b""", RegexOption.IGNORE_CASE), " ")
+            // Strip decimal prices (10.50, 30.00, 6.90)
+            .replace(Regex("""\b\d{1,5}\.\d{2}\b"""), " ")
+            // Strip currency-prefixed prices ($55, €42, £38)
+            .replace(Regex("""[\$€£]\s*\d+\.?\d*"""), " ")
+            // Strip glass/bottle format (13/41)
+            .replace(Regex("""\b\d{1,4}/\d{1,4}\b"""), " ")
+            // Strip bare numbers that look like prices (not years)
+            .replace(Regex("""\b(\d{2,5})\b""")) { match ->
+                val num = match.groupValues[1].toIntOrNull()
+                if (num != null && num !in 1900..2099) " " else match.value
+            }
+            // Collapse whitespace and trim
+            .replace(Regex("\\s+"), " ")
+            .trim()
+            .ifEmpty { name.trim() }
     }
 
     /**

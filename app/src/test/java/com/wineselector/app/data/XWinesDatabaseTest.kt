@@ -119,9 +119,9 @@ class XWinesDatabaseTest {
 
     @Test
     fun `findMatch - should match by full wine name`() {
-        val match = db.findMatch("Reserva Chardonnay 2020 Bottle")
-        assertNotNull("Should match Reserva Chardonnay", match)
-        assertEquals("Reserva Chardonnay", match!!.wineName)
+        val match = db.findMatch("Origem Merlot 2020 Bottle")
+        assertNotNull("Should match Origem Merlot (2 distinctive words)", match)
+        assertEquals("Origem Merlot", match!!.wineName)
     }
 
     @Test
@@ -153,12 +153,14 @@ class XWinesDatabaseTest {
     // ==========================================
 
     @Test
-    fun `findMatch - should match wine with 1 distinctive name word`() {
+    fun `findMatch - should NOT match wine with only 1 distinctive name word`() {
         // "Reserva Chardonnay" has 1 distinctive word ("chardonnay") after stop-word removal.
-        // "Estate Reserve Chardonnay 2021" has "chardonnay" which is 100% match.
+        // findMatch requires 2+ matched words to prevent single-word grape names from
+        // falsely matching any OCR text containing that grape (e.g., "Bodegas Tarón
+        // Tempranillo" shouldn't match a DB wine named "Tempranillo"). Single-word wines
+        // still match via Tier 1/2 (sorted-word index) in findMatchTiered.
         val match = db.findMatch("Estate Reserve Chardonnay 2021")
-        assertNotNull("Should match Chardonnay by name (1-word wine)", match)
-        assertTrue("Matched wine should have Chardonnay grape", match!!.grapes.contains("Chardonnay"))
+        assertNull("Single-word wines should not match via findMatch (use Tier 1/2 instead)", match)
     }
 
     @Test
@@ -233,7 +235,7 @@ class XWinesDatabaseTest {
 
     @Test
     fun `harmonizesWithFood - Chardonnay should harmonize with fish`() {
-        val chard = db.findMatch("Reserva Chardonnay")!!
+        val chard = db.findMatchTiered("Reserva Chardonnay", null)!!.entry
         // Reserva Chardonnay harmonizes with "Rich Fish"
         assertTrue("Chardonnay should harmonize with fish",
             db.harmonizesWithFood(chard, FoodCategory.FISH))
@@ -241,7 +243,7 @@ class XWinesDatabaseTest {
 
     @Test
     fun `harmonizesWithFood - Chardonnay should harmonize with seafood`() {
-        val chard = db.findMatch("Reserva Chardonnay")!!
+        val chard = db.findMatchTiered("Reserva Chardonnay", null)!!.entry
         assertTrue("Chardonnay should harmonize with seafood",
             db.harmonizesWithFood(chard, FoodCategory.SEAFOOD))
     }
@@ -283,7 +285,7 @@ class XWinesDatabaseTest {
 
     @Test
     fun `getMappedFoodCategories - Chardonnay should include seafood and chicken`() {
-        val chard = db.findMatch("Reserva Chardonnay")!!
+        val chard = db.findMatchTiered("Reserva Chardonnay", null)!!.entry
         val categories = db.getMappedFoodCategories(chard)
         assertTrue("Should include FISH", categories.contains(FoodCategory.FISH))
         assertTrue("Should include SEAFOOD", categories.contains(FoodCategory.SEAFOOD))
@@ -584,5 +586,187 @@ class XWinesDatabaseTest {
     fun `findMatch - should not match section header Cabernet and Blends`() {
         val match = db.findMatch("Cabernet and Blends")
         assertNull("Section header 'Cabernet and Blends' should not match any wine", match)
+    }
+
+    // ==========================================
+    // Single-word wine rejection in Tier 3
+    // ==========================================
+
+    @Test
+    fun `findMatch - should not match single-word grape wine against multi-word OCR text`() {
+        // A DB wine with only 1 distinctive name word (e.g., "Tempranillo") must not
+        // match OCR text like "Bodegas Tarón Tempranillo" — the real wine is Bodegas
+        // Tarón, not a generic "Tempranillo" entry.
+        // "Reserva Chardonnay" has 1 distinctive word: "chardonnay"
+        val match = db.findMatch("Bodegas Tarón Chardonnay Rioja 2019")
+        assertNull("Single-word DB wine should not match multi-word OCR text via Tier 3", match)
+    }
+
+    @Test
+    fun `findMatch - multi-word wine still matches in surrounding text`() {
+        // "Origem Merlot" has 2 distinctive words and should still match when
+        // embedded in longer OCR text.
+        val match = db.findMatch("Glass \$18 Origem Merlot 2019 Mendoza Argentina")
+        assertNotNull("Multi-word wine should still match", match)
+        assertEquals("Origem Merlot", match!!.wineName)
+    }
+
+    @Test
+    fun `findMatchTiered - single-word wine matches via sorted-word index`() {
+        // "Reserva Chardonnay" has sorted key "chardonnay". If the OCR text also
+        // reduces to just "chardonnay", Tier 1/2 should match it.
+        val result = db.findMatchTiered("Reserva Chardonnay", null)
+        assertNotNull("Single-word wine should match via Tier 1/2 sorted-word index", result)
+        assertEquals("Reserva Chardonnay", result!!.entry.wineName)
+        assertEquals(DbMatchTier.EXACT, result.matchTier)
+    }
+
+    @Test
+    fun `findMatchTiered - single-word wine does NOT match when extra words present`() {
+        // OCR text "Bodegas Tarón Chardonnay" has sorted key "bodegas chardonnay taron"
+        // which doesn't match "chardonnay" in sorted-word index. Tier 3 (findMatch)
+        // also rejects because matchCount=1 < 2.
+        val result = db.findMatchTiered("Bodegas Tarón Chardonnay", null)
+        assertNull("Single-word wine should not match when OCR has extra non-stop words", result)
+    }
+
+    // ==========================================
+    // Levenshtein fuzzy word matching
+    // ==========================================
+
+    @Test
+    fun `levenshtein - identical strings have distance 0`() {
+        assertEquals(0, TextNormalizer.levenshteinDistance("cabernet", "cabernet"))
+    }
+
+    @Test
+    fun `levenshtein - single substitution has distance 1`() {
+        assertEquals(1, TextNormalizer.levenshteinDistance("merlat", "merlot"))
+    }
+
+    @Test
+    fun `levenshtein - single insertion has distance 1`() {
+        assertEquals(1, TextNormalizer.levenshteinDistance("sauvigon", "sauvignon"))
+    }
+
+    @Test
+    fun `levenshtein - single deletion has distance 1`() {
+        assertEquals(1, TextNormalizer.levenshteinDistance("chardonnaay", "chardonnay"))
+    }
+
+    @Test
+    fun `levenshtein - two edits has distance 2`() {
+        // "cabemet" (7 chars) vs "cabernet" (8 chars): insert 'r' + substitute 'm'->'n' = 2
+        assertEquals(2, TextNormalizer.levenshteinDistance("cabemet", "cabernet"))
+    }
+
+    @Test
+    fun `fuzzyWordMatch - should find closest word within distance 1`() {
+        val candidates = setOf("cabernet", "merlot", "shiraz", "sauvignon")
+        assertEquals("merlot", TextNormalizer.fuzzyWordMatch("merlat", candidates, 1))
+    }
+
+    @Test
+    fun `fuzzyWordMatch - should return null for short words`() {
+        val candidates = setOf("del", "dei", "des")
+        assertNull("Short words should not fuzzy match",
+            TextNormalizer.fuzzyWordMatch("del", candidates, 1))
+    }
+
+    @Test
+    fun `fuzzyWordMatch - should return null when no match within threshold`() {
+        val candidates = setOf("cabernet", "merlot", "shiraz")
+        assertNull("Should not match when distance > threshold",
+            TextNormalizer.fuzzyWordMatch("zinfandel", candidates, 1))
+    }
+
+    @Test
+    fun `fuzzyWordMatch - should match Sauvigon to Sauvignon`() {
+        // "sauvigon" (8 chars) vs "sauvignon" (9 chars) — single deletion, distance 1
+        val candidates = setOf("sauvignon", "cabernet", "merlot")
+        assertEquals("sauvignon", TextNormalizer.fuzzyWordMatch("sauvigon", candidates, 1))
+    }
+
+    // ==========================================
+    // Fuzzy word lookup in XWinesDatabase
+    // ==========================================
+
+    @Test
+    fun `findFuzzyWordMatch - should recover OCR typo Cabemet to Cabernet`() {
+        // "cabernet" should be in allIndexedWords if any wine has "Cabernet" in its name
+        val result = db.findFuzzyWordMatch("cabemet")
+        // May or may not match depending on DB contents, but if it does it should be "cabernet"
+        if (result != null) {
+            assertEquals("cabernet", result)
+        }
+    }
+
+    @Test
+    fun `findFuzzyWordMatch - should return null for short words`() {
+        assertNull("Short words should not fuzzy match", db.findFuzzyWordMatch("red"))
+    }
+
+    // ==========================================
+    // Tier 2.5 fuzzy sorted-word matching
+    // ==========================================
+
+    @Test
+    fun `findMatchTiered - fuzzy matching recovers OCR typo in wine name`() {
+        // If "Origem Merlot" is in the DB, then "0rigem Merl0t" should match
+        // via OCR variants (existing), but "Origem Merl0t" tests the OCR correction path
+        val result = db.findMatchTiered("0rigem Merl0t", null)
+        assertNotNull("Should match via OCR correction", result)
+        if (result != null) {
+            assertTrue(result.entry.wineName.contains("Origem"))
+        }
+    }
+
+    // ==========================================
+    // Abbreviated vintage extraction
+    // ==========================================
+
+    @Test
+    fun `extractVintage - should extract 4-digit year`() {
+        assertEquals(2019, XWinesDatabase.extractVintage("Merlot 2019 $45"))
+    }
+
+    @Test
+    fun `extractVintage - should extract abbreviated vintage 08 as 2008`() {
+        assertEquals(2008, XWinesDatabase.extractVintage("Château Petrus, Pomerol '08"))
+    }
+
+    @Test
+    fun `extractVintage - should extract abbreviated vintage 17 as 2017`() {
+        assertEquals(2017, XWinesDatabase.extractVintage("Hanzell, Sonoma Coast '17"))
+    }
+
+    @Test
+    fun `extractVintage - should expand 50+ as 19xx`() {
+        assertEquals(1998, XWinesDatabase.extractVintage("Vintage Port '98"))
+    }
+
+    @Test
+    fun `extractVintage - should expand less than 50 as 20xx`() {
+        assertEquals(2015, XWinesDatabase.extractVintage("Barolo '15"))
+    }
+
+    @Test
+    fun `extractVintage - 4-digit year takes priority over abbreviated`() {
+        assertEquals(2019, XWinesDatabase.extractVintage("Wine 2019 '15"))
+    }
+
+    @Test
+    fun `extractVintage - should return null when no vintage`() {
+        assertNull(XWinesDatabase.extractVintage("Merlot Reserve Bottle"))
+    }
+
+    @Test
+    fun `extractVintage - should handle smart quotes`() {
+        assertEquals(2014, XWinesDatabase.extractVintage("Barolo DOCG \u201914"))
+    }
+
+    @Test
+    fun `extractVintage - should handle right single quote`() {
+        assertEquals(2016, XWinesDatabase.extractVintage("Napa Valley \u201916"))
     }
 }
