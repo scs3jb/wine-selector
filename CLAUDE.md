@@ -68,11 +68,13 @@ APK output: `app/build/outputs/apk/debug/app-debug.apk`
 
 - **Fully on-device** — No cloud API, no API key, no internet needed for wine analysis
 - **ML Kit Text Recognition** — Google's on-device OCR extracts wine list text from photos (model bundled in APK)
-- **Wine Pairing Rules Engine** — Knowledge base of 60+ grape varieties, regions, and styles with food pairing scores (1-10). Two-pass architecture: Pass 1 matches against X-Wines database, Pass 2 uses keyword fallback with section context inheritance
-- **Strict exact matching with fuzzy fallback** — When the X-Wines database is loaded, ONLY wines with database matches are shown. Uses a sorted-word index for order-independent matching (e.g., "Barolo, Viberti" matches "Viberti Barolo") with 100% DB word coverage required for word-based fallback. Tier 2.5 adds Levenshtein distance-1 fuzzy matching to recover single-character OCR typos (e.g., "Cabermet" → "Cabernet"). Display names come directly from the database (canonical wine names), not OCR text
-- **Keyword-base + harmonization bonus scoring** — Wine scores are anchored to keyword/grape scores from the rules engine. X-Wines harmonization adds a +2 bonus (capped at 10) rather than overriding the base score, ensuring consistent rankings
-- **Spatial OCR merging** — `OcrResult.spatiallyMergedText()` groups OCR lines by vertical overlap into visual rows (sorted left-to-right), fixing two-column menu layouts where producer names and descriptions are read as separate text blocks
-- **Comprehensive price detection** — Detects currency symbols ($/€/£), glass/bottle format (13/41), and bare trailing numbers. Used consistently across entry splitting, coalescing, filtering, and display name cleaning via `lineHasPrice()`
+- **LLM-based wine name extraction** — On-device LLM (SmolLM2-360M-Instruct GGUF) extracts wine names from OCR text, replacing the old heuristic pipeline (~1000 lines of coalescing/keyword/section-context logic). Wine names are then matched exactly against the X-Wines database
+- **WineNameExtractor with LlmBackend interface** — `WineNameExtractor` uses a pluggable `LlmBackend` interface for LLM inference. Prompt building and response parsing are testable independently. The llamacpp-kotlin library (0.1.2) is the intended backend but requires Kotlin 2.0+ (currently commented out in build.gradle.kts)
+- **LlmModelManager** — Downloads and caches the GGUF model (~271MB) following the same pattern as `XWinesDownloader`: download → validate → cache in `filesDir/llm_model/`
+- **Wine Pairing Engine** — Knowledge base of 60+ grape varieties with food pairing scores (1-10). Takes LLM-extracted wine names, matches against X-Wines DB via `findMatchTiered()`, scores via grape inference + harmonization bonus (+2, capped at 10). No keyword fallback or section context — only DB-matched wines are shown
+- **Strict exact matching with fuzzy fallback** — Uses sorted-word index for order-independent matching with Levenshtein distance-1 fuzzy matching. Display names come from the database (canonical wine names)
+- **Spatial OCR merging** — `OcrResult.spatiallyMergedText()` groups OCR lines by vertical overlap into visual rows (sorted left-to-right), fixing two-column menu layouts
+- **Comprehensive price detection** — Detects currency symbols ($/€/£), glass/bottle format (13/41), and bare trailing numbers via `lineHasPrice()`
 - **X-Wines Dataset Integration** — Three-tier strategy: bundled 100-wine fallback, downloadable Slim (1K wines/150K ratings), or Full (100K wines/21M ratings). User chooses on first boot
 - **Performance-optimized matching** — XWinesDatabase builds three HashMap indexes plus an allIndexedWords set after loading: name word index, sorted-word index, grape index, and a flat word set for Levenshtein fuzzy fallback. O(1) lookups instead of O(n) linear scan. Matching completes in <1ms per query even with 100K wines
 - **Single Activity** — `MainActivity` hosts Compose UI with state-based screen switching (no Navigation Compose)
@@ -88,10 +90,11 @@ APK output: `app/build/outputs/apk/debug/app-debug.apk`
 - **Camera capture** — Uses file-based `OnImageSavedCallback`, NOT `OnImageCapturedCallback` (which returns YUV data that `BitmapFactory` can't decode)
 - **CameraX 1.3.1** — Do NOT call `.setJpegQuality()` — that method was added in CameraX 1.4.0 and causes `NoSuchMethodError` at runtime
 - **Image display** — Uses Coil `AsyncImage` with file path, NOT in-memory `ByteArray` (which causes OOM on high-res photos)
-- **Price detection consistency** — All price detection in `WinePairingEngine` must use `lineHasPrice()` (not `PRICE_PATTERN` alone), which checks currency symbols, glass/bottle format, and bare trailing numbers. Using `PRICE_PATTERN` alone misses bare number prices (e.g., "7000") and causes entry splitting failures where wines merge into mega-entries and bypass the price filter
-- **Pass 1 scoring** — Do NOT use flat scores (e.g., 8-10) for X-Wines harmonization matches. This overrides keyword differentiation and makes rankings inconsistent. Always compute a keyword/grape base score first, then add harmonization as a +2 bonus
+- **Price detection consistency** — All price detection in `WinePairingEngine` must use `lineHasPrice()` (not `PRICE_PATTERN` alone), which checks currency symbols, glass/bottle format, and bare trailing numbers
+- **Harmonization bonus scoring** — Do NOT use flat scores (e.g., 8-10) for X-Wines harmonization matches. Always compute a keyword/grape base score first, then add harmonization as a +2 bonus (capped at 10)
 - **Stop words** — "noir" and "blanc" are NOT stop words in XWinesDatabase — they're essential grape qualifiers. Without them, "Pinot Noir" and "Pinot Grigio" both reduce to "pinot" and become indistinguishable. Do NOT add them to the STOP_WORDS set
-- **DB display names** — In DB mode, displayName is ALWAYS `xEntry.wineName` (the canonical DB name). NEVER use OCR text as the display name — this caused wrong wine descriptions to be shown. The card headline must match the DB metadata (grapes, region, body, etc.)
+- **DB display names** — displayName is ALWAYS `xEntry.wineName` (the canonical DB name). NEVER use OCR text or LLM-extracted text as the display name — the card headline must match the DB metadata (grapes, region, body, etc.)
+- **Vendored llama.cpp native libraries** — The pre-compiled arm64-v8a `.so` files are extracted from the `llamacpp-kotlin` AAR (Apache 2.0) and placed in `app/src/main/jniLibs/arm64-v8a/`. The Kotlin JNI wrapper (`org.nehuatl.llamacpp.LlamaContext`) is our own code — the package name MUST stay `org.nehuatl.llamacpp` to match the native JNI function names baked into the `.so` files. This approach avoids the Kotlin 2.0+ dependency that the published library requires
 
 ## Code Conventions
 
@@ -112,7 +115,9 @@ app/src/main/java/com/wineselector/app/
 │   ├── WineRecommendation.kt    # Data class for recommendation results (includes optional XWineEntry)
 │   ├── OcrResult.kt             # OCR data classes with spatial line merging for two-column menus
 │   ├── TextRecognitionService.kt # ML Kit on-device OCR wrapper
-│   ├── WinePairingEngine.kt     # Two-pass rules engine: X-Wines DB match → keyword fallback, 60+ grape/region profiles
+│   ├── LlmModelManager.kt      # GGUF model download/cache manager
+│   ├── WineNameExtractor.kt    # LLM-based wine name extraction with LlmBackend interface
+│   ├── WinePairingEngine.kt     # Scores LLM-extracted wine names against food via DB matching + grape profiles
 │   ├── WinePreferences.kt       # User preferences (max price, ignored grapes, wine type filter) with multi-format price parsing
 │   ├── XWinesDatabase.kt        # X-Wines CSV loader with HashMap indexes for fast matching
 │   └── XWinesDownloader.kt      # Downloads zip datasets, extracts CSVs, manages cache and user choice
@@ -172,10 +177,73 @@ Edit `ui/screens/CameraScreen.kt`. The camera uses CameraX with:
 
 ## Emulator Testing
 
-This environment lacks KVM hardware acceleration, so the Android emulator cannot run here. To test:
+The emulator runs locally in `.buildtools/android-sdk/` with KVM acceleration. Everything is self-contained — no system-wide installs needed.
 
-- Transfer the APK to a physical device, or
-- Build locally on a machine with KVM support and use the emulator
+### First-Time Emulator Setup
+
+If the emulator or system image aren't installed yet:
+
+```bash
+export JAVA_HOME="/home/jbriggs/src/wine-selector/.buildtools/jdk-17.0.2"
+export PATH="$JAVA_HOME/bin:$PATH"
+export ANDROID_HOME="/home/jbriggs/src/wine-selector/.buildtools/android-sdk"
+
+# Install emulator and system image
+$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager "emulator" "system-images;android-34;google_apis;x86_64"
+
+# Create AVD
+echo "no" | $ANDROID_HOME/cmdline-tools/latest/bin/avdmanager create avd \
+  -n wine_test -k "system-images;android-34;google_apis;x86_64" \
+  -d pixel_6
+```
+
+### Starting the Emulator
+
+```bash
+export ANDROID_HOME="/home/jbriggs/src/wine-selector/.buildtools/android-sdk"
+
+# Launch emulator (requires DISPLAY for GPU; use :1 or :0 depending on environment)
+DISPLAY=:1 nohup $ANDROID_HOME/emulator/emulator \
+  -avd wine_test -no-audio -gpu auto -no-boot-anim -memory 4096 \
+  -no-snapshot-save > /tmp/emulator.log 2>&1 &
+
+# Wait for boot to complete
+for i in $(seq 1 30); do
+  if $ANDROID_HOME/platform-tools/adb shell getprop sys.boot_completed 2>/dev/null | grep -q "1"; then
+    echo "Boot complete"; break
+  fi
+  sleep 10
+done
+```
+
+### Install and Launch App
+
+```bash
+$ANDROID_HOME/platform-tools/adb install -r app/build/outputs/apk/debug/app-debug.apk
+$ANDROID_HOME/platform-tools/adb shell am start -n com.wineselector.app/.MainActivity
+```
+
+### Checking Logs
+
+```bash
+# All app logs
+$ANDROID_HOME/platform-tools/adb logcat -d | grep -iE "wineselector|LlamaContext"
+
+# Check for crashes
+$ANDROID_HOME/platform-tools/adb logcat -d | grep -iE "FATAL|SIGILL|has died"
+
+# Check app is still running
+$ANDROID_HOME/platform-tools/adb shell pidof com.wineselector.app
+```
+
+### Important Emulator Gotchas
+
+- **KVM required** — Check with `ls /dev/kvm`. Without KVM the emulator is unusably slow
+- **DISPLAY required for `-gpu auto`** — The emulator needs a display server. Use `DISPLAY=:1` (Xvfb or real display). Without it, GPU initialization fails
+- **ARM translation on x86_64** — The emulator is x86_64 but the app's native `.so` files (llama.cpp) are arm64-v8a only. The Google APIs system image includes ARM translation that runs arm64 code on x86_64. This works but only with the basic `librnllama_v8.so` variant — optimized variants (fp16, dotprod, i8mm) cause `SIGILL` crashes because the translation layer doesn't support advanced ARM extensions. `LlamaContext.kt` handles this automatically by detecting x86_64 and loading the basic variant
+- **Cold boot is slow** — First boot takes ~60-100 seconds. Subsequent boots with snapshot are ~10 seconds. Use `-no-boot-anim` to speed up
+- **No `-gpu swiftshader_indirect`** — This software renderer is too slow for practical use; boot never completes. Always use `-gpu auto` with a display
+- **AVD lives in `~/.android/avd/`** — The AVD named `wine_test` stores its disk image in `~/.android/avd/wine_test.avd/`. This is outside the project directory
 
 ## Dependencies
 
@@ -194,13 +262,13 @@ Managed in `app/build.gradle.kts`. Key dependency versions:
 1. **Photo capture** — CameraX saves JPEG to `cacheDir/wine_list.jpg`
 2. **OCR** — `TextRecognitionService` uses ML Kit to extract text with per-line bounding boxes
 3. **Spatial merge** — `OcrResult.spatiallyMergedText()` groups lines by vertical overlap into visual rows, fixing two-column layouts
-4. **Entry coalescing** — `coalesceEntries()` groups consecutive OCR lines into wine entries using heuristics (vintage detection, price detection, section headers, entry boundary splitting via `shouldSplitBefore`)
-5. **Two-pass matching**:
-   - **Pass 1 (X-Wines)** — Matches entries against the X-Wines database by name using a four-tier strategy: Tier 1 (sorted-word match + exact vintage), Tier 2 (sorted-word match, best rated), Tier 2.5 (Levenshtein fuzzy sorted-word match, distance 1), Tier 3 (strict 100% DB word coverage with fuzzy word expansion). Supports abbreviated vintages ('08 → 2008, '19 → 2019). Display name comes from the canonical DB wine name. Computes a stable base score from keyword/grape inference, then adds +2 harmonization bonus if X-Wines confirms the food pairing (capped at 10). Wines without keyword matches get a modest rating-based score (3-5). When DB is loaded, ONLY DB-matched wines are shown — no keyword fallback
-   - **Pass 2 (Keywords)** — Fallback for entries not matched in Pass 1. Scans for known grape/region keywords in OCR text, with section context inheritance (e.g., wines under a "Champagne" header inherit that keyword). Falls back to X-Wines grape inference if no keyword match
-6. **Preference filtering** — Filters by max price (supports $/€/£ symbols, glass/bottle format like 13/41, and bare trailing numbers), ignored grapes, and allowed wine types
-7. **Ranking** — Sorted by score (desc) → X-Wines average rating (desc) → alphabetical display name (asc) for deterministic tiebreaking
-8. **Result** — Top match displayed with name, price (if detected), pairing reasoning, runner-up, and X-Wines metadata (rating, grapes, body, acidity, region, food harmonizations) when available
+4. **LLM extraction** — `WineNameExtractor` sends merged OCR text to the on-device LLM with a prompt asking it to extract wine names (one per line, including producer and vintage). Response is parsed and filtered (removes headers, all-digit lines, short lines)
+5. **DB matching** — For each LLM-extracted wine name: clean via `cleanNameForMatching()`, extract vintage, look up via `XWinesDatabase.findMatchTiered()` (sorted-word index → fuzzy → strict word match). No match → skip. Display name comes from canonical DB wine name
+6. **Scoring** — Base score from `inferScoreFromGrapes()` (60+ grape profiles), +2 harmonization bonus if X-Wines confirms food pairing (capped at 10). Wines without keyword-matching grapes get a modest rating-based score (3-5)
+7. **Price extraction** — Prices found by matching wine name words back to OCR lines that contain prices
+8. **Preference filtering** — Filters by max price, ignored grapes, and allowed wine types
+9. **Ranking** — Sorted by score (desc) → X-Wines average rating (desc) → alphabetical display name (asc) for deterministic tiebreaking
+10. **Result** — Top match displayed with name, price (if detected), pairing reasoning, runner-up, and X-Wines metadata when available
 
 ## X-Wines Dataset
 
@@ -267,11 +335,11 @@ Defined in `XWinesDatabase.harmonizeToCategory`. X-Wines food labels ("Beef", "P
 
 ## Tests
 
-260 unit tests across 5 test suites:
+171 unit tests across 5 test suites:
 
-- `WinePairingEngineTest` (123 tests) — Wine list matching across 5 scenarios, price extraction, X-Wines boosting, OCR typo resilience, abbreviated vintage support
+- `WinePairingEngineTest` (40 tests) — Tests `recommendWines(List<String>, ...)` with known bundled DB wines, grape inference scoring, harmonization bonus, preference filtering (type, ignored grapes, max price), edge cases (empty input, no DB matches, blank names, deduplication), vintage handling, match source classification, `cleanNameForMatching()`, `extractPrice()`, `lineHasPrice()`, `buildRecommendation()`
+- `WineNameExtractorTest` (17 tests) — Prompt building (`buildPrompt()` includes OCR text, instructions), response parsing (`parseResponse()` handles newlines, numbered lists, bullet points, mixed formats), filtering (blank lines, all-digit lines, section headers, short lines)
 - `XWinesDatabaseTest` (87 tests) — CSV parsing, indexed name/grape matching, food harmonization, slim dataset loading, performance benchmarks, Levenshtein fuzzy matching, abbreviated vintage extraction
-- `MenuMatchingIntegrationTest` (23 tests) — Real menu OCR transcription matching against bundled DB, section headers, price detection
 - `TextNormalizerTest` (19 tests) — Accent stripping, OCR character substitution, Levenshtein distance, fuzzy word matching
 - `XWinesDownloaderTest` (8 tests) — URL configuration, space requirements, dataset filename validation
 

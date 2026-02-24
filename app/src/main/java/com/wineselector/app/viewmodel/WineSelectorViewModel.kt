@@ -4,7 +4,6 @@ import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import android.graphics.Rect
-import com.wineselector.app.data.DatasetSize
 import com.wineselector.app.data.FoodCategory
 import com.wineselector.app.data.HighlightTier
 import com.wineselector.app.data.OcrResult
@@ -15,33 +14,17 @@ import com.wineselector.app.data.WinePreferences
 import com.wineselector.app.data.WinePreferencesStore
 import com.wineselector.app.data.WineRecommendation
 import com.wineselector.app.data.TextNormalizer
-import com.wineselector.app.data.XWinesDatabase
-import com.wineselector.app.data.XWinesDownloader
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import java.io.File
 
-sealed class DatasetStatus {
-    data class UsingBundled(val wineCount: Int) : DatasetStatus()
-    data class Downloading(val progressPercent: Int, val datasetLabel: String) : DatasetStatus()
-    object Extracting : DatasetStatus()
-    data class UsingEnhanced(val wineCount: Int, val datasetLabel: String) : DatasetStatus()
-    data class DownloadFailed(val message: String) : DatasetStatus()
-    data class InsufficientSpace(val requiredMb: Long, val availableMb: Long) : DatasetStatus()
-    object NeedsChoice : DatasetStatus()
-}
-
 class WineSelectorViewModel(application: Application) : AndroidViewModel(application) {
 
     private val textRecognitionService = TextRecognitionService()
-    val xWinesDownloader = XWinesDownloader(application)
     private val preferencesStore = WinePreferencesStore(application)
-
-    // Start with bundled dataset — always available instantly
-    private var xWinesDb = XWinesDatabase().also { it.load(application) }
-    private var winePairingEngine = WinePairingEngine(xWinesDb)
+    private val winePairingEngine = WinePairingEngine()
 
     private val _selectedCategory = MutableStateFlow<FoodCategory?>(null)
     val selectedCategory: StateFlow<FoodCategory?> = _selectedCategory.asStateFlow()
@@ -61,14 +44,6 @@ class WineSelectorViewModel(application: Application) : AndroidViewModel(applica
     private val _showResult = MutableStateFlow(false)
     val showResult: StateFlow<Boolean> = _showResult.asStateFlow()
 
-    private val _datasetStatus = MutableStateFlow<DatasetStatus>(
-        DatasetStatus.UsingBundled(xWinesDb.wineCount)
-    )
-    val datasetStatus: StateFlow<DatasetStatus> = _datasetStatus.asStateFlow()
-
-    private val _showDatasetChoice = MutableStateFlow(false)
-    val showDatasetChoice: StateFlow<Boolean> = _showDatasetChoice.asStateFlow()
-
     private val _winePreferences = MutableStateFlow(preferencesStore.load())
     val winePreferences: StateFlow<WinePreferences> = _winePreferences.asStateFlow()
 
@@ -78,129 +53,14 @@ class WineSelectorViewModel(application: Application) : AndroidViewModel(applica
     private val _ocrImageSize = MutableStateFlow<Pair<Int, Int>?>(null)
     val ocrImageSize: StateFlow<Pair<Int, Int>?> = _ocrImageSize.asStateFlow()
 
-    init {
-        viewModelScope.launch { initializeDataset() }
-    }
-
-    private suspend fun initializeDataset() {
-        // If user already chose and we have cached files, load them
-        val cached = xWinesDownloader.getCachedFiles()
-        if (cached != null) {
-            loadEnhancedDataset(cached.first, cached.second)
-            return
-        }
-
-        // If user previously chose to skip downloads
-        if (xWinesDownloader.isSkipped()) {
-            _datasetStatus.value = DatasetStatus.UsingBundled(xWinesDb.wineCount)
-            return
-        }
-
-        // If user made a choice before but cache was cleared, re-download
-        val savedChoice = xWinesDownloader.getSavedChoice()
-        if (savedChoice != null) {
-            downloadDataset(savedChoice)
-            return
-        }
-
-        // First boot — show choice dialog
-        _showDatasetChoice.value = true
-        _datasetStatus.value = DatasetStatus.NeedsChoice
-    }
-
-    fun onDatasetChosen(choice: DatasetSize) {
-        _showDatasetChoice.value = false
-        viewModelScope.launch {
-            // If this dataset is already cached, just load it — no re-download
-            val cached = xWinesDownloader.getCachedFiles(choice)
-            if (cached != null) {
-                xWinesDownloader.saveChoice(choice)
-                _datasetStatus.value = DatasetStatus.Extracting
-                loadEnhancedDataset(cached.first, cached.second)
-            } else {
-                downloadDataset(choice)
-            }
-        }
-    }
-
-    fun onSkipDownload() {
-        _showDatasetChoice.value = false
-        xWinesDownloader.saveSkipChoice()
-        // Reset to bundled dataset
-        val app = getApplication<Application>()
-        xWinesDb = XWinesDatabase().also { it.load(app) }
-        winePairingEngine = WinePairingEngine(xWinesDb)
-        _datasetStatus.value = DatasetStatus.UsingBundled(xWinesDb.wineCount)
-    }
-
-    private suspend fun downloadDataset(dataset: DatasetSize) {
-        // Check available space
-        if (!xWinesDownloader.hasEnoughSpace(dataset)) {
-            val available = xWinesDownloader.getAvailableSpaceMb()
-            _datasetStatus.value = DatasetStatus.InsufficientSpace(
-                requiredMb = dataset.requiredSpaceMb,
-                availableMb = available
-            )
-            return
-        }
-
-        _datasetStatus.value = DatasetStatus.Downloading(0, dataset.label)
-
-        val result = xWinesDownloader.downloadDataset(dataset) { percent ->
-            _datasetStatus.value = DatasetStatus.Downloading(percent, dataset.label)
-        }
-
-        val files = result.getOrElse { e ->
-            _datasetStatus.value = DatasetStatus.DownloadFailed(e.message ?: "Download failed")
-            return
-        }
-
-        _datasetStatus.value = DatasetStatus.Extracting
-        loadEnhancedDataset(files.first, files.second)
-    }
-
-    private suspend fun loadEnhancedDataset(winesFile: File, ratingsFile: File) {
-        try {
-            val newDb = XWinesDatabase().also {
-                it.loadFromFilesAsync(winesFile, ratingsFile)
-            }
-
-            // Hot-swap (back on Main)
-            xWinesDb = newDb
-            winePairingEngine = WinePairingEngine(newDb)
-
-            val label = xWinesDownloader.getSavedChoice()?.label ?: "Enhanced"
-            _datasetStatus.value = DatasetStatus.UsingEnhanced(newDb.wineCount, label)
-        } catch (e: Exception) {
-            val choice = xWinesDownloader.getSavedChoice()
-            if (choice != null) xWinesDownloader.clearCache(choice)
-            _datasetStatus.value = DatasetStatus.DownloadFailed(
-                "Failed to load dataset: ${e.message}"
-            )
-        }
-    }
-
-    fun retryDownload() {
-        viewModelScope.launch {
-            val savedChoice = xWinesDownloader.getSavedChoice()
-            if (savedChoice != null) {
-                xWinesDownloader.clearCache(savedChoice)
-                downloadDataset(savedChoice)
-            } else {
-                _showDatasetChoice.value = true
-                _datasetStatus.value = DatasetStatus.NeedsChoice
-            }
-        }
-    }
-
-    fun changeDataset() {
-        _showDatasetChoice.value = true
-    }
-
     fun updatePreferences(prefs: WinePreferences) {
         _winePreferences.value = prefs
         preferencesStore.save(prefs)
     }
+
+    // ==========================================
+    // Wine Analysis Pipeline
+    // ==========================================
 
     fun selectCategory(category: FoodCategory) {
         _selectedCategory.value = category
@@ -234,11 +94,19 @@ class WineSelectorViewModel(application: Application) : AndroidViewModel(applica
                     onSuccess = { ocrResult ->
                         _ocrImageSize.value = Pair(ocrResult.imageWidth, ocrResult.imageHeight)
 
+                        val mergedText = ocrResult.spatiallyMergedText()
+                        val ocrLines = mergedText.lines()
+
+                        // Build wine name candidates from OCR lines.
+                        // Try each line individually AND pairs of consecutive lines,
+                        // because menus often split wine names across lines.
+                        val wineNames = buildOcrCandidates(ocrLines)
+
                         val scoredWines = winePairingEngine.recommendWines(
-                            ocrResult.spatiallyMergedText(), category, _winePreferences.value
+                            wineNames, category, _winePreferences.value, ocrLines
                         )
                         val rec = winePairingEngine.buildRecommendation(
-                            scoredWines, category, ocrResult.fullText
+                            scoredWines, category, mergedText
                         )
                         _recommendation.value = rec
                         _wineHighlights.value = buildHighlights(scoredWines, ocrResult)
@@ -256,6 +124,10 @@ class WineSelectorViewModel(application: Application) : AndroidViewModel(applica
         }
     }
 
+    /**
+     * Build highlights for the photo overlay. Only highlights the single
+     * best-matching OCR line per wine — avoids over-highlighting.
+     */
     private fun buildHighlights(
         scoredWines: List<WinePairingEngine.ScoredWine>,
         ocrResult: OcrResult
@@ -272,33 +144,41 @@ class WineSelectorViewModel(application: Application) : AndroidViewModel(applica
                 2 -> HighlightTier.BRONZE
                 else -> HighlightTier.RED
             }
-            val matchText = (scored.ocrHighlightText ?: scored.originalText).lowercase()
-            val matchTextNormalized = TextNormalizer.normalizeForMatching(matchText)
-            val matchedBoxes = mutableListOf<Rect>()
+            val displayName = (scored.displayName ?: scored.originalText).lowercase()
+            val displayNormalized = TextNormalizer.normalizeForMatching(displayName)
+            val nameWords = displayNormalized
+                .replace(Regex("[^a-z0-9\\s]"), " ")
+                .split(Regex("\\s+"))
+                .filter { it.length > 2 }
+                .toSet()
+
+            // Find the single best-matching OCR line
+            var bestLineIdx = -1
+            var bestOverlap = 0
+            var bestBox: Rect? = null
 
             for ((lineIdx, ocrLine) in ocrResult.lines.withIndex()) {
                 if (lineIdx in usedLineIndices) continue
                 val lineText = ocrLine.text.trim()
-                // Skip pure price lines (no alphabetical content)
                 if (lineText.none { it.isLetter() }) continue
-                val lineLower = lineText.lowercase()
-                if (lineLower.length > 4) {
-                    // Try exact substring match first, then accent-normalized fallback
-                    val matches = matchText.contains(lineLower) ||
-                        matchTextNormalized.contains(TextNormalizer.normalizeForMatching(lineLower))
-                    if (matches) {
-                        ocrLine.boundingBox?.let {
-                            matchedBoxes.add(it)
-                            usedLineIndices.add(lineIdx)
-                        }
-                    }
+                if (ocrLine.boundingBox == null) continue
+                val lineNormalized = TextNormalizer.normalizeForMatching(lineText.lowercase())
+
+                val overlap = nameWords.count { lineNormalized.contains(it) }
+                if (overlap > bestOverlap) {
+                    bestOverlap = overlap
+                    bestLineIdx = lineIdx
+                    bestBox = ocrLine.boundingBox
                 }
             }
 
-            if (matchedBoxes.isNotEmpty()) {
+            // Require at least 2 word overlap (or 1 if name has only 1 word)
+            val minOverlap = if (nameWords.size <= 1) 1 else 2
+            if (bestOverlap >= minOverlap && bestBox != null) {
+                usedLineIndices.add(bestLineIdx)
                 highlights.add(
                     WineHighlight(
-                        boundingBoxes = matchedBoxes,
+                        boundingBoxes = listOf(bestBox),
                         tier = tier,
                         wineName = scored.displayName ?: scored.originalText
                     )
@@ -312,6 +192,16 @@ class WineSelectorViewModel(application: Application) : AndroidViewModel(applica
     fun setError(message: String) {
         _error.value = message
         _showResult.value = true
+    }
+
+    /**
+     * Build wine name candidates from raw OCR lines.
+     * Uses individual lines only — each line is a candidate.
+     * Multi-word grape keywords (e.g., "cabernet sauvignon", "pinot noir")
+     * will still match when the full name is on one line.
+     */
+    private fun buildOcrCandidates(ocrLines: List<String>): List<String> {
+        return ocrLines.filter { it.isNotBlank() }
     }
 
     fun reset() {

@@ -25,8 +25,6 @@ fun WineSelectorApp(viewModel: WineSelectorViewModel) {
         val isLoading by viewModel.isLoading.collectAsState()
         val error by viewModel.error.collectAsState()
         val showResult by viewModel.showResult.collectAsState()
-        val datasetStatus by viewModel.datasetStatus.collectAsState()
-        val showDatasetChoice by viewModel.showDatasetChoice.collectAsState()
         val winePreferences by viewModel.winePreferences.collectAsState()
         val wineHighlights by viewModel.wineHighlights.collectAsState()
         val ocrImageSize by viewModel.ocrImageSize.collectAsState()
@@ -53,12 +51,6 @@ fun WineSelectorApp(viewModel: WineSelectorViewModel) {
                     onScanWineList = {
                         permissionLauncher.launch(Manifest.permission.CAMERA)
                     },
-                    datasetStatus = datasetStatus,
-                    showDatasetChoice = showDatasetChoice,
-                    onDatasetChosen = { viewModel.onDatasetChosen(it) },
-                    onSkipDownload = { viewModel.onSkipDownload() },
-                    onRetryDownload = { viewModel.retryDownload() },
-                    onChangeDataset = { viewModel.changeDataset() },
                     maxPrice = winePreferences.maxPrice,
                     onOpenSettings = { currentScreen = "settings" }
                 )
