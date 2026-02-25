@@ -376,8 +376,8 @@ class WinePairingEngineTest {
     }
 
     @Test
-    fun `cleanDisplayName strips quoted vineyard names and keeps producer`() {
-        assertEquals("Pinot Grigio, Cramele Recas",
+    fun `cleanDisplayName unquotes vineyard names and keeps producer`() {
+        assertEquals("Pinot Grigio, Frunza Cramele",
             engine.cleanDisplayName("Pinot Grigio 'Frunza' 2021, Cramele Recas", "pinot grigio"))
     }
 

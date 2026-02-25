@@ -393,6 +393,14 @@ class WinePairingEngine {
             "interesting reds", "california grill"
         )
 
+        // Color modifiers that override a keyword's default wine type
+        private val WHITE_MODIFIERS = Regex(
+            """\b(?:blanc[oa]?|white|bianco|weiss|weisswein)\b""", RegexOption.IGNORE_CASE
+        )
+        private val ROSE_MODIFIERS = Regex(
+            """\b(?:ros[eé]|rosato|rosado)\b""", RegexOption.IGNORE_CASE
+        )
+
         // Patterns that indicate a section header, not a wine
         private val HEADER_SUFFIXES = Regex(
             """\b(?:and\s+blends?|cont\.?|continued)\s*$""", RegexOption.IGNORE_CASE
@@ -429,11 +437,23 @@ class WinePairingEngine {
                 "smooth ", "crisp ", "fresh ", "classic ", "elegant ",
                 "medium ", "bone ", "simple ", "award ", "just ",
                 "aromatic ", "intense ", "off-dry", "fruity ",
-                "dark ", "pole ", "spanish ", "when only"
+                "dark ", "pole ", "spanish ", "when only",
+                "mouth", "warm ", "ruby ", "cherry ", "expressive ",
+                "new world", "attractive ", "easy ", "bright ",
+                "zesty ", "very ", "lively ", "with "
             )
             if (descStarters.any { lower.startsWith(it) }) return true
             // Very long lines are likely descriptions (wine names are rarely > 70 chars)
             if (trimmed.length > 80) return true
+            // Lines with 4+ adjective-like words are likely descriptions, not wine names
+            val descWords = setOf(
+                "crispy", "fruity", "mouth-watering", "refreshing", "delicious",
+                "balanced", "rounded", "bodied", "flavoured", "flavored",
+                "generoux", "generous", "velvety", "silky", "concentrated",
+                "oaked", "unoaked", "complex", "subtle", "powerful"
+            )
+            val wordCount = lower.split(Regex("\\s+")).count { it in descWords }
+            if (wordCount >= 2) return true
             return false
         }
 
@@ -486,8 +506,9 @@ class WinePairingEngine {
             val priceText = findPriceForWine(wineName, ocrLines)
             if (!preferences.acceptsPrice(priceText)) continue
 
-            // Preference filtering by wine type
-            if (keywordMatch.type != null && !preferences.acceptsType(keywordMatch.type.label)) continue
+            // Preference filtering by wine type — color modifiers override keyword default
+            val actualType = detectActualType(cleanedName, keywordMatch.type)
+            if (actualType != null && !preferences.acceptsType(actualType.label)) continue
 
             // Build a clean display name from the OCR text
             val displayName = cleanDisplayName(cleanedName, keywordMatch.keyword)
@@ -503,7 +524,7 @@ class WinePairingEngine {
                 val cleanedNorm = TextNormalizer.normalizeForMatching(cleanedName)
                 val keyNorm = keywordMatch.keyword
                 val withoutKeyword = cleanedNorm.replace(keyNorm, "").trim()
-                    .replace(Regex("[,\\-.:;\\s]+"), "")
+                    .replace(Regex("[,\\-.:;'\"\\s]+"), "")
                 // If nothing meaningful remains, skip this match
                 if (withoutKeyword.length < 3) continue
             }
@@ -559,6 +580,17 @@ class WinePairingEngine {
         val reason: String,
         val type: WineType?
     )
+
+    /**
+     * Detect the actual wine type by checking for color modifiers in the text.
+     * "Rioja Blanco" → WHITE even though "rioja" keyword defaults to RED.
+     */
+    private fun detectActualType(text: String, defaultType: WineType?): WineType? {
+        val lower = text.lowercase()
+        if (WHITE_MODIFIERS.containsMatchIn(lower)) return WineType.WHITE
+        if (ROSE_MODIFIERS.containsMatchIn(lower)) return WineType.ROSE
+        return defaultType
+    }
 
     /**
      * Find the best grape/region keyword match in a wine name.
@@ -676,14 +708,14 @@ class WinePairingEngine {
             .replace(Regex("""\b\d{2,4}\s*ml\b""", RegexOption.IGNORE_CASE), " ")
             // Strip "(½ bottle)" or "(half bottle)" style text
             .replace(Regex("""\(.*?\)"""), " ")
-            // Strip quoted vineyard/sub-names: "Sebella", 'Frunza'
-            .replace(Regex("""["'"'"][^"'"'"]*["'"'"]"""), " ")
+            // Unquote vineyard/producer names: "Sebella" → Sebella, 'Frunza' → Frunza
+            .replace(Regex("""["'"'"]\s*([^"'"'"]*?)\s*["'"'"]"""), " $1 ")
             // Strip "Glass", "Bottle" as standalone words
             .replace(Regex("""\b(?:glass|bottle|cont)\b""", RegexOption.IGNORE_CASE), " ")
             // Strip abbreviated vintages: '17, '13, '08
             .replace(Regex("""'\d{2}\b"""), " ")
-            // Strip region qualifiers that aren't grape keywords (DOCG, DOC, IGT, AOC, etc.)
-            .replace(Regex("""\b(?:DOCG|DOC|IGT|AOC|AOP|VDP|DO|AVA)\b""", RegexOption.IGNORE_CASE), " ")
+            // Strip region qualifiers and dietary markers (DOCG, DOC, IGT, AOC, VG, etc.)
+            .replace(Regex("""\b(?:DOCG|DOC|IGT|AOC|AOP|VDP|DO|AVA|VG|VE)\b""", RegexOption.IGNORE_CASE), " ")
             // Collapse whitespace
             .replace(Regex("\\s+"), " ")
             .trim()
@@ -705,7 +737,8 @@ class WinePairingEngine {
                 "superiore", "classico", "brut", "ripasso",
                 "vecchio", "nobile", "rosé", "rose",
                 "du pape", "grand cru", "gran reserva",
-                "blanco", "blanc", "rouge", "nero", "bianco"
+                "blanco", "blanc", "rouge", "nero", "bianco",
+                "crianza", "joven"
             )
             // Check if trailing words start with a known qualifier
             val matchedQualifier = qualifierPatterns.find { trailingLower.startsWith(it) }
