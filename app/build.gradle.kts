@@ -1,3 +1,5 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -16,6 +18,18 @@ android {
 
     }
 
+    signingConfigs {
+        create("release") {
+            val keystoreDir = File(System.getProperty("user.home"), "documents/sync/personal/keystore")
+            val props = Properties()
+            File(keystoreDir, "wine-selector.release.pswd").inputStream().use { props.load(it) }
+            storeFile = File(keystoreDir, "wine-selector.release.keystore")
+            storePassword = props.getProperty("storePassword")
+            keyAlias = props.getProperty("keyAlias")
+            keyPassword = props.getProperty("keyPassword")
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = false
@@ -23,6 +37,7 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
+            signingConfig = signingConfigs.getByName("release")
         }
     }
 

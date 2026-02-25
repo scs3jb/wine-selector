@@ -1,0 +1,83 @@
+====================================
+GOOGLE PLAY STORE LISTING
+====================================
+
+APP NAME (30 char max):
+Wine Selector
+
+SHORT DESCRIPTION (80 char max):
+Photograph a wine list, pick your food, and get instant pairing recommendations.
+
+FULL DESCRIPTION (4000 char max):
+Wine Selector takes the guesswork out of choosing wine at a restaurant.
+
+Simply snap a photo of the wine list, select what you're eating, and get instant, personalised recommendations ranked by how well each wine pairs with your food.
+
+HOW IT WORKS
+1. Choose your food - Pick from 12 categories including beef, chicken, fish, seafood, pasta, pizza, and more
+2. Photograph the wine list - Use the built-in camera to capture any wine menu
+3. Get recommendations - Wines are identified, scored, and ranked by food pairing strength
+
+WINE PAIRING KNOWLEDGE
+Built-in profiles for 60+ grape varieties and wine regions, including:
+- Red grapes: Cabernet Sauvignon, Merlot, Pinot Noir, Malbec, Syrah, Tempranillo, Sangiovese, Nebbiolo, Grenache, and more
+- White grapes: Chardonnay, Sauvignon Blanc, Riesling, Pinot Grigio, and more
+- Regions: Bordeaux, Burgundy, Rioja, Chianti, Barolo, Barbaresco, Chablis, Sancerre, and more
+- Styles: Champagne, Prosecco, Port, Rosé, and more
+
+Each wine gets a pairing score from 1-10 with a clear explanation of why it works with your food.
+
+FEATURES
+- Works completely offline - no internet connection required
+- No account needed, no data collected
+- On-device text recognition (Google ML Kit)
+- Wine type filtering (red, white, rosé)
+- Price-aware recommendations with budget setting
+- Smart OCR handles two-column menus, prices in multiple formats, and accented text
+- Clean display names showing producer and wine type
+
+PERFECT FOR
+- Restaurant diners who want better wine choices
+- Wine beginners who want to learn about food pairings
+- Anyone tired of defaulting to "house red"
+
+No sommelier required. Just point, shoot, and choose.
+
+CATEGORY: Food & Drink
+CONTENT RATING: Everyone
+TAGS: wine, food pairing, restaurant, sommelier, wine list, camera, OCR
+
+====================================
+PRIVACY POLICY (host this at a URL)
+====================================
+
+Privacy Policy for Wine Selector
+
+Last updated: 25 February 2026
+
+Wine Selector is designed with privacy in mind. The app operates entirely on your device with no data collection.
+
+Information We Collect:
+We do not collect, store, or transmit any personal information. Specifically:
+- Photos taken within the app are stored temporarily in the app's cache directory and are not uploaded anywhere
+- No analytics, tracking, or telemetry data is collected
+- No account or registration is required
+- No internet connection is required for the app's core functionality
+
+Camera Permission:
+The app requests camera access solely to photograph wine lists for text recognition. Photos are processed entirely on your device using Google ML Kit's on-device text recognition. Images are not transmitted to any server.
+
+Data Storage:
+All app data (preferences, cached photos) is stored locally on your device. You can clear this data at any time through Android Settings > Apps > Wine Selector > Storage > Clear Data.
+
+Third-Party Services:
+The app uses Google ML Kit for on-device text recognition. This library runs entirely on your device and does not send image data to Google's servers. See Google's ML Kit privacy information at: https://developers.google.com/ml-kit/terms
+
+Children's Privacy:
+The app does not knowingly collect information from children under 13.
+
+Changes to This Policy:
+We may update this Privacy Policy from time to time. Changes will be reflected in the "Last updated" date above.
+
+Contact:
+For questions about this privacy policy, please open an issue at the project's GitHub repository.
