@@ -39,6 +39,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
@@ -64,6 +65,9 @@ fun CameraScreen(
     var imageCapture by remember { mutableStateOf<ImageCapture?>(null) }
     var isCapturing by remember { mutableStateOf(false) }
     var cameraProvider by remember { mutableStateOf<ProcessCameraProvider?>(null) }
+    // The manifest declares android.hardware.camera as required="false", so the app can
+    // land on a device with no usable camera. Surface that instead of a dead black screen.
+    var cameraError by remember { mutableStateOf(false) }
 
     DisposableEffect(Unit) {
         onDispose {
@@ -128,6 +132,8 @@ fun CameraScreen(
                             }
                         } catch (e: Exception) {
                             Log.e("CameraScreen", "Camera setup failed", e)
+                            imageCapture = null
+                            cameraError = true
                         }
                     }, ContextCompat.getMainExecutor(ctx))
 
@@ -136,13 +142,30 @@ fun CameraScreen(
                 modifier = Modifier.fillMaxSize()
             )
 
+            if (cameraError) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(32.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = "No camera available on this device.",
+                        color = MaterialTheme.colorScheme.onSurface,
+                        textAlign = TextAlign.Center
+                    )
+                }
+            }
+
             Box(
                 modifier = Modifier
                     .fillMaxSize()
                     .padding(bottom = 32.dp),
                 contentAlignment = Alignment.BottomCenter
             ) {
-                if (isCapturing) {
+                if (cameraError) {
+                    // No shutter button — there is nothing to capture.
+                } else if (isCapturing) {
                     CircularProgressIndicator(
                         color = MaterialTheme.colorScheme.primary,
                         modifier = Modifier.size(72.dp)

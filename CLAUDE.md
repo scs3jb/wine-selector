@@ -12,9 +12,9 @@ All build tools are self-contained in `.buildtools/` — no system-level install
 ### Environment Variables (required for every build)
 
 ```bash
-export JAVA_HOME="/src/wine-selector/.buildtools/jdk-17.0.2"
+export JAVA_HOME="/home/jbriggs/src/wine-selector/.buildtools/jdk-17.0.2"
 export PATH="$JAVA_HOME/bin:$PATH"
-export ANDROID_HOME="/src/wine-selector/.buildtools/android-sdk"
+export ANDROID_HOME="/home/jbriggs/src/wine-selector/.buildtools/android-sdk"
 ```
 
 ### First-Time Setup: Installing Build Tools
@@ -23,7 +23,7 @@ If `.buildtools/jdk-17.0.2` or `.buildtools/android-sdk` do not exist, install t
 
 ```bash
 # 1. Create directory
-mkdir -p /src/wine-selector/.buildtools && cd /src/wine-selector/.buildtools
+mkdir -p /home/jbriggs/src/wine-selector/.buildtools && cd /home/jbriggs/src/wine-selector/.buildtools
 
 # 2. Download and install JDK 17 (Adoptium Temurin, Linux x64)
 curl -fSL -o jdk17.tar.gz "https://github.com/adoptium/temurin17-binaries/releases/download/jdk-17.0.2%2B8/OpenJDK17U-jdk_x64_linux_hotspot_17.0.2_8.tar.gz"
@@ -38,13 +38,13 @@ mkdir -p android-sdk/cmdline-tools/latest
 mv android-sdk/cmdline-tools/bin android-sdk/cmdline-tools/lib android-sdk/cmdline-tools/latest/
 
 # 4. Set env vars (needed for sdkmanager)
-export JAVA_HOME="/src/wine-selector/.buildtools/jdk-17.0.2"
+export JAVA_HOME="/home/jbriggs/src/wine-selector/.buildtools/jdk-17.0.2"
 export PATH="$JAVA_HOME/bin:$PATH"
-export ANDROID_HOME="/src/wine-selector/.buildtools/android-sdk"
+export ANDROID_HOME="/home/jbriggs/src/wine-selector/.buildtools/android-sdk"
 
 # 5. Accept licenses and install SDK components
 yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses
-$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager "platforms;android-34" "build-tools;34.0.0" "platform-tools"
+$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager "platforms;android-36" "build-tools;36.0.0" "platform-tools"
 ```
 
 After setup, verify with: `$JAVA_HOME/bin/java -version` (should show 17.0.2).
@@ -88,7 +88,10 @@ APK output: `app/build/outputs/apk/debug/app-debug.apk`
 - **Navigation Compose was removed** — It pulled in incompatible `compose-animation` versions. The app uses simple state-based screen switching instead
 - **CameraX lifecycle** — Must bind to the Activity lifecycle (via `context.findActivity()`), NOT `LocalLifecycleOwner` which returns `NavBackStackEntry` and can be DESTROYED
 - **Camera capture** — Uses file-based `OnImageSavedCallback`, NOT `OnImageCapturedCallback` (which returns YUV data that `BitmapFactory` can't decode)
-- **CameraX 1.3.1** — Do NOT call `.setJpegQuality()` — that method was added in CameraX 1.4.0 and causes `NoSuchMethodError` at runtime
+- **Google Play target API level** — Play requires new uploads to target API 36 from 31 Aug 2026 (API 35 from 31 Aug 2025). Bumping `targetSdk` also requires bumping AGP: AGP 8.9 and earlier top out at `compileSdk 35`
+- **16 KB page size (Play requirement)** — Apps with native code targeting API 35+ must support 16 KB memory pages. CameraX 1.3.1 and ML Kit 16.0.0 shipped 4 KB-aligned `.so` files and would be rejected; CameraX 1.5.3 + ML Kit 16.0.1 are 16 KB-aligned. Verify after any camera/ML Kit bump:
+  `readelf -lW <lib>.so | grep LOAD` must show align `0x4000` for every 64-bit ABI (32-bit ABIs are exempt), and
+  `$ANDROID_HOME/build-tools/36.0.0/zipalign -c -P 16 -v 4 app-debug.apk` must report "Verification successful"
 - **Image display** — Uses Coil `AsyncImage` with file path, NOT in-memory `ByteArray` (which causes OOM on high-res photos)
 - **Price detection consistency** — All price detection in `WinePairingEngine` must use `lineHasPrice()` (not `PRICE_PATTERN` alone), which checks currency symbols, glass/bottle format, and bare trailing numbers
 - **Harmonization bonus scoring** — Do NOT use flat scores (e.g., 8-10) for X-Wines harmonization matches. Always compute a keyword/grape base score first, then add harmonization as a +2 bonus (capped at 10)
@@ -189,11 +192,11 @@ export PATH="$JAVA_HOME/bin:$PATH"
 export ANDROID_HOME="/home/jbriggs/src/wine-selector/.buildtools/android-sdk"
 
 # Install emulator and system image
-$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager "emulator" "system-images;android-34;google_apis;x86_64"
+$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager "emulator" "system-images;android-36;google_apis;x86_64"
 
 # Create AVD
 echo "no" | $ANDROID_HOME/cmdline-tools/latest/bin/avdmanager create avd \
-  -n wine_test -k "system-images;android-34;google_apis;x86_64" \
+  -n wine_test36 -k "system-images;android-36;google_apis;x86_64" \
   -d pixel_6
 ```
 
@@ -204,7 +207,7 @@ export ANDROID_HOME="/home/jbriggs/src/wine-selector/.buildtools/android-sdk"
 
 # Launch emulator (requires DISPLAY for GPU; use :1 or :0 depending on environment)
 DISPLAY=:1 nohup $ANDROID_HOME/emulator/emulator \
-  -avd wine_test -no-audio -gpu auto -no-boot-anim -memory 4096 \
+  -avd wine_test36 -no-audio -gpu auto -no-boot-anim -memory 4096 \
   -no-snapshot-save > /tmp/emulator.log 2>&1 &
 
 # Wait for boot to complete
@@ -243,19 +246,21 @@ $ANDROID_HOME/platform-tools/adb shell pidof com.wineselector.app
 - **ARM translation on x86_64** — The emulator is x86_64 but the app's native `.so` files (llama.cpp) are arm64-v8a only. The Google APIs system image includes ARM translation that runs arm64 code on x86_64. This works but only with the basic `librnllama_v8.so` variant — optimized variants (fp16, dotprod, i8mm) cause `SIGILL` crashes because the translation layer doesn't support advanced ARM extensions. `LlamaContext.kt` handles this automatically by detecting x86_64 and loading the basic variant
 - **Cold boot is slow** — First boot takes ~60-100 seconds. Subsequent boots with snapshot are ~10 seconds. Use `-no-boot-anim` to speed up
 - **No `-gpu swiftshader_indirect`** — This software renderer is too slow for practical use; boot never completes. Always use `-gpu auto` with a display
-- **AVD lives in `~/.android/avd/`** — The AVD named `wine_test` stores its disk image in `~/.android/avd/wine_test.avd/`. This is outside the project directory
+- **AVD lives in `~/.android/avd/`** — The AVD named `wine_test36` stores its disk image in `~/.android/avd/wine_test36.avd/`. This is outside the project directory
 
 ## Dependencies
 
 Managed in `app/build.gradle.kts`. Key dependency versions:
 
 - Compose BOM: `2024.02.00` (DO NOT downgrade — causes animation crashes)
-- CameraX: `1.3.1`
-- ML Kit Text Recognition: `16.0.0`
+- CameraX: `1.5.3`
+- ML Kit Text Recognition: `16.0.1`
 - Coil: `2.5.0`
 - Kotlin: `1.9.22`
 - Compose Compiler: `1.5.8`
-- AGP: `8.2.2`
+- AGP: `8.10.1` (first AGP line that supports `compileSdk = 36`)
+- Gradle: `8.11.1` (minimum for AGP 8.10)
+- compileSdk / targetSdk: `36` (Android 16 — required by Google Play from 31 Aug 2026)
 
 ## Processing Pipeline
 
@@ -335,7 +340,7 @@ Defined in `XWinesDatabase.harmonizeToCategory`. X-Wines food labels ("Beef", "P
 
 ## Tests
 
-171 unit tests across 5 test suites:
+172 unit tests across 5 test suites:
 
 - `WinePairingEngineTest` (40 tests) — Tests `recommendWines(List<String>, ...)` with known bundled DB wines, grape inference scoring, harmonization bonus, preference filtering (type, ignored grapes, max price), edge cases (empty input, no DB matches, blank names, deduplication), vintage handling, match source classification, `cleanNameForMatching()`, `extractPrice()`, `lineHasPrice()`, `buildRecommendation()`
 - `WineNameExtractorTest` (17 tests) — Prompt building (`buildPrompt()` includes OCR text, instructions), response parsing (`parseResponse()` handles newlines, numbered lists, bullet points, mixed formats), filtering (blank lines, all-digit lines, section headers, short lines)
