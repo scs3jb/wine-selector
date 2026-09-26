@@ -1,8 +1,9 @@
 import java.util.Properties
 
 plugins {
-    id("com.android.application")
-    id("org.jetbrains.kotlin.android")
+    alias(libs.plugins.android.application)
+    alias(libs.plugins.kotlin.android)
+    alias(libs.plugins.kotlin.compose)
 }
 
 android {
@@ -13,9 +14,8 @@ android {
         applicationId = "com.wineselector.app"
         minSdk = 26
         targetSdk = 36
-        versionCode = 4
-        versionName = "1.0"
-
+        versionCode = 5
+        versionName = "2.0"
     }
 
     // Release signing is optional: the keystore only exists on the maintainer's
@@ -61,51 +61,43 @@ android {
         compose = true
     }
 
-    composeOptions {
-        kotlinCompilerExtensionVersion = "1.5.8"
-    }
-
     packaging {
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
+            excludes += "/META-INF/versions/9/previous-compilation-data.bin"
         }
     }
 }
 
 dependencies {
-    val composeBom = platform("androidx.compose:compose-bom:2024.02.00")
-    implementation(composeBom)
+    implementation(project(":core"))
 
-    implementation("androidx.core:core-ktx:1.12.0")
-    implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.7.0")
-    implementation("androidx.activity:activity-compose:1.8.2")
+    implementation(platform(libs.compose.bom))
+    implementation(libs.compose.ui)
+    implementation(libs.compose.ui.graphics)
+    implementation(libs.compose.ui.tooling.preview)
+    implementation(libs.compose.material3)
+    implementation(libs.compose.material.icons.extended)
 
-    // Compose
-    implementation("androidx.compose.ui:ui")
-    implementation("androidx.compose.ui:ui-graphics")
-    implementation("androidx.compose.ui:ui-tooling-preview")
-    implementation("androidx.compose.material3:material3")
-    implementation("androidx.compose.material:material-icons-extended")
+    implementation(libs.androidx.core.ktx)
+    implementation(libs.androidx.activity.compose)
+    implementation(libs.androidx.lifecycle.runtime.compose)
+    implementation(libs.androidx.lifecycle.viewmodel.compose)
+    implementation(libs.androidx.navigation.compose)
+    implementation(libs.kotlinx.coroutines.android)
+    implementation(libs.okhttp)
 
-    // CameraX
-    implementation("androidx.camera:camera-core:1.5.3")
-    implementation("androidx.camera:camera-camera2:1.5.3")
-    implementation("androidx.camera:camera-lifecycle:1.5.3")
-    implementation("androidx.camera:camera-view:1.5.3")
+    // CameraX 1.5.3 + ML Kit 16.0.1 ship 16 KB-aligned native libraries (Play requirement).
+    implementation(libs.camera.core)
+    implementation(libs.camera.camera2)
+    implementation(libs.camera.lifecycle)
+    implementation(libs.camera.view)
+    implementation(libs.mlkit.text.recognition)
 
-    // ML Kit Text Recognition (on-device, no API key needed)
-    implementation("com.google.mlkit:text-recognition:16.0.1")
+    implementation(libs.coil.compose)
 
-    // Image loading
-    implementation("io.coil-kt:coil-compose:2.5.0")
+    testImplementation(libs.junit)
 
-    // Lifecycle ViewModel Compose
-    implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.7.0")
-    implementation("androidx.lifecycle:lifecycle-runtime-compose:2.7.0")
-
-    // Unit testing
-    testImplementation("junit:junit:4.13.2")
-
-    debugImplementation("androidx.compose.ui:ui-tooling")
-    debugImplementation("androidx.compose.ui:ui-test-manifest")
+    debugImplementation(libs.compose.ui.tooling)
+    debugImplementation(libs.compose.ui.test.manifest)
 }

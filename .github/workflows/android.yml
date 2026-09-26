@@ -27,11 +27,16 @@ jobs:
       - name: Point local.properties at the runner's Android SDK
         run: echo "sdk.dir=$ANDROID_HOME" > local.properties
 
-      - name: Unit tests
-        run: ./gradlew --no-daemon testDebugUnitTest
+      - name: Unit tests (core + app)
+        run: ./gradlew --no-daemon :core:test :app:testDebugUnitTest
 
       - name: Assemble debug APK
         run: ./gradlew --no-daemon assembleDebug
+
+      - name: Verify 16 KB page alignment (Google Play requirement)
+        run: |
+          BT=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)
+          "$BT/zipalign" -c -P 16 -v 4 app/build/outputs/apk/debug/app-debug.apk | tail -1
 
       - name: Upload test reports
         if: always()
