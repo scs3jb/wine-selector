@@ -1,177 +1,71 @@
 # Wine Selector
 
-An Android app that recommends wines from a photographed wine list based on what you're eating. Point your camera at any wine list, select your food, and get a pairing recommendation instantly.
+An Android app that reads **wine lists** and **bottle labels** and tells you what to drink. Point your camera at a menu and every wine is ranked for your food, with its vintage explained and, if you like, what it costs in the shops. Point it at a bottle and it identifies the wine, rates the vintage, estimates when to drink it and finds retail prices online.
 
-**Works fully offline** — no API key, no cloud service, no internet required. Uses on-device text recognition and a built-in wine pairing knowledge base.
+Text recognition and wine matching run entirely on your phone. Only the optional live price lookup uses the internet.
 
-## How It Works
+## Features
 
-1. **Pick your food** — Choose from 12 categories: Beef, Pork, Chicken, Pasta, Fish, Seafood, Lamb, Vegetarian, Cheese, Dessert, Sushi, Pizza
-2. **Scan the wine list** — Take a photo of any wine list using the in-app camera
-3. **Get a recommendation** — The app reads the wine list, matches wines against a knowledge base of 60+ grape varieties and regions, and recommends the best pairing with an explanation
+- **Scan a wine list** — Every wine on the menu is read, matched against the X-Wines database and ranked for what you're eating. Two-column menus, glass/bottle prices, half bottles, section headers and tasting notes are all understood.
+- **Scan a bottle** — The label's producer and wine name are picked out from the largest type. If the match is uncertain you get a "Not this wine?" list of alternatives.
+- **Smart vintages** — Reads 2019, '19 and NV. Tells you whether the vintage is recorded for that wine or which is closest, rates the year for 15 classic regions, and estimates a drinking window ("too young", "at its peak", "drink up").
+- **Live prices** — Retail prices from Google Shopping through SerpApi, vintage first. Menu prices are compared with retail to show the markup. Wine-Searcher, Vivino and Google Shopping links are always available, no key needed.
+- **Picks** — Best pairing, best value and top rated, plus filters by style and sorting by price, rating or vintage.
+- **Instant re-ranking** — Change the food and the list re-orders without rescanning.
+- **History** — Recent scans with photos, ready to reopen.
+- **Import from photos** — Scan a picture you already took.
 
-## Screenshots
+## Using the app
 
-The app has three screens:
+1. Choose what you're eating on the home screen, or "Just drinking".
+2. Tap **Scan a wine list** or **Scan a bottle**. Tap to focus, pinch to zoom, use the torch in dim restaurants.
+3. Browse the ranked list. Tap any wine for vintage, pairing and price details.
 
-- **Home** — Food category picker with emoji icons and a "Scan Wine List" button
-- **Camera** — Full-screen CameraX viewfinder with a capture button (no confirmation step — instant capture)
-- **Result** — Displays the recommendation with wine name, price (if detected), pairing explanation, and runner-up
+### Getting live prices
 
-## Setup
+Create a free account at [serpapi.com](https://serpapi.com), copy your API key and paste it in **Settings → Live prices**. The app searches for the exact vintage first and tells you when prices are for other vintages.
 
-### Prerequisites
+### Recognising more wines
 
-- An Android device running Android 8.0 (API 26) or higher
-- A camera on the device
+The app ships with a 100-wine starter set. In **Settings → Wine database** you can download the Slim set (about 1,000 wines, 3 MB) or the Full set (about 100,000 wines, 300 MB). The download happens in the background.
 
-That's it — no API key or account needed.
+## Building
 
-### Install the APK
-
-The debug APK is located at:
-
-```
-app/build/outputs/apk/debug/app-debug.apk
-```
-
-Install it on a connected device:
+Requirements: JDK 17 and an Android SDK with platform 36. See `CLAUDE.md` for a fully self-contained setup under `.buildtools/`.
 
 ```bash
-adb install app/build/outputs/apk/debug/app-debug.apk
+./gradlew :core:test        # Fast JVM tests for all scanning and matching logic
+./gradlew assembleDebug     # Debug APK
 ```
 
-Or transfer the APK file to your device and install it directly.
+The APK is written to `app/build/outputs/apk/debug/app-debug.apk`. Every push also builds it in GitHub Actions and attaches it as the `app-debug` artifact.
 
-### First Launch
+Release builds are signed only when the maintainer's keystore is present; otherwise `assembleRelease` produces an unsigned APK.
 
-1. Open **Wine Selector**
-2. Select a food category
-3. Tap **Scan Wine List** and grant camera permission when prompted
-4. Photograph a wine list
-5. View the recommendation instantly
+## Project structure
 
-## Building from Source
+- **`core/`** — Pure Kotlin module with the scanning and matching logic: OCR layout analysis, menu and label parsing, database matching, vintage guide, pairing engine, price lookup and history. Fully unit-tested on the JVM.
+- **`app/`** — Android app: CameraX camera, ML Kit OCR, Jetpack Compose UI, ViewModel, settings and dataset downloads.
 
-### Build Environment
+## Tech stack
 
-The project includes a self-contained build environment under `.buildtools/`:
-
-- **JDK 17** — OpenJDK 17.0.2 at `.buildtools/jdk-17.0.2/`
-- **Android SDK** — Platform 34, Build Tools 34.0.0 at `.buildtools/android-sdk/`
-- **Gradle 8.5** — Via the included Gradle wrapper
-
-### Build Commands
-
-Set up the environment and build:
-
-```bash
-export JAVA_HOME="/src/wine-selector/.buildtools/jdk-17.0.2"
-export PATH="$JAVA_HOME/bin:$PATH"
-export ANDROID_HOME="/src/wine-selector/.buildtools/android-sdk"
-
-# Debug build
-./gradlew assembleDebug
-
-# Release build (requires signing config)
-./gradlew assembleRelease
-```
-
-The output APK will be at `app/build/outputs/apk/debug/app-debug.apk`.
-
-## Project Structure
-
-```
-wine-selector/
-├── app/
-│   ├── build.gradle.kts              # App dependencies and build config
-│   └── src/main/
-│       ├── AndroidManifest.xml       # Permissions: CAMERA, INTERNET
-│       ├── java/com/wineselector/app/
-│       │   ├── MainActivity.kt       # Entry point
-│       │   ├── WineSelectorApp.kt    # Screen switching and theme
-│       │   ├── data/
-│       │   │   ├── FoodCategory.kt          # 12 food categories with emojis
-│       │   │   ├── WineRecommendation.kt    # Result data class
-│       │   │   ├── TextRecognitionService.kt # ML Kit on-device OCR
-│       │   │   └── WinePairingEngine.kt     # 60+ wine profiles with food scores
-│       │   ├── viewmodel/
-│       │   │   └── WineSelectorViewModel.kt # App state and business logic
-│       │   └── ui/
-│       │       ├── screens/
-│       │       │   ├── HomeScreen.kt        # Food picker + scan button
-│       │       │   ├── CameraScreen.kt      # CameraX in-app capture
-│       │       │   └── ResultScreen.kt      # Recommendation display
-│       │       ├── components/
-│       │       │   ├── FoodCategoryPicker.kt       # Food chip grid
-│       │       │   └── WineRecommendationCard.kt   # Recommendation card
-│       │       └── theme/
-│       │           ├── Theme.kt     # Material 3 theme (light/dark)
-│       │           ├── Color.kt     # Wine-themed color palette
-│       │           └── Type.kt      # Serif headlines typography
-│       └── res/
-│           ├── drawable/            # Launcher icon (wine glass vector)
-│           ├── mipmap-hdpi/         # Adaptive icon definition
-│           ├── values/              # Strings, themes
-│           └── xml/                 # FileProvider paths
-├── build.gradle.kts                 # Root Gradle config
-├── settings.gradle.kts              # Project settings
-├── gradle.properties                # Build properties
-├── local.properties                 # Local SDK path
-└── .buildtools/                     # Self-contained JDK + Android SDK
-```
-
-## Architecture
-
-- **Pattern**: MVVM with Jetpack Compose
-- **State Management**: Kotlin StateFlow in ViewModel
-- **Screen Navigation**: State-based switching via `rememberSaveable` (no Navigation Compose)
-- **Camera**: CameraX with ImageCapture for instant JPEG capture
-- **OCR**: Google ML Kit Text Recognition (on-device, no API key)
-- **Wine Matching**: Built-in rules engine with 60+ grape/region/style profiles
-- **Image Display**: Coil AsyncImage from file path
-- **Theme**: Material 3 with wine-inspired colors (deep reds, golds, cream)
-
-## Dependencies
-
-| Library | Version | Purpose |
-|---------|---------|---------|
-| Jetpack Compose BOM | 2024.02.00 | UI framework |
-| Material 3 | (BOM) | Design system |
-| CameraX | 1.3.1 | In-app camera |
-| ML Kit Text Recognition | 16.0.0 | On-device OCR |
-| Coil | 2.5.0 | Image loading |
-| Lifecycle ViewModel | 2.7.0 | MVVM support |
-
-## Wine Knowledge Base
-
-The app includes a built-in knowledge base covering:
-
-**Red wines**: Cabernet Sauvignon, Merlot, Pinot Noir, Malbec, Syrah/Shiraz, Zinfandel, Tempranillo, Sangiovese, Nebbiolo, Grenache, Barbera, Primitivo
-
-**White wines**: Chardonnay, Sauvignon Blanc, Riesling, Pinot Grigio/Gris, Viognier, Gewurztraminer, Gruner Veltliner, Albarino, Muscadet, Chenin Blanc, Semillon
-
-**Sparkling**: Champagne, Prosecco, Cava
-
-**Dessert**: Moscato, Port, Sauternes, Ice Wine
-
-**Regions/Styles**: Bordeaux, Burgundy, Chianti, Barolo, Barbaresco, Rioja, Cotes du Rhone, Chateauneuf-du-Pape, Sancerre, Chablis, Valpolicella, Amarone, Beaujolais, Montepulciano
-
-**Rosé**: Generic rosé detection
-
-Each entry has food pairing scores for all 12 food categories based on established sommelier pairing principles.
+| Area | Library |
+|------|---------|
+| Language | Kotlin 2.1 |
+| UI | Jetpack Compose (BOM 2025.01), Material 3, Navigation Compose |
+| Camera | CameraX 1.5.3 |
+| OCR | ML Kit Text Recognition 16.0.1 (on-device) |
+| Images | Coil 2.7 |
+| Networking | OkHttp 4.12, kotlinx-serialization-json |
+| Wine data | [X-Wines](https://github.com/rogerioxavier/X-Wines) |
 
 ## Permissions
 
-- **CAMERA** — Required to photograph wine lists
-- **INTERNET** — Used by ML Kit for initial model download (first use only; works offline after)
+- **CAMERA** — to photograph wine lists and labels.
+- **INTERNET** — for optional price lookups and wine database downloads.
 
 ## Troubleshooting
 
-**Camera not working** — Make sure you granted camera permission when prompted. You can also enable it in Android Settings > Apps > Wine Selector > Permissions.
-
-**"Could not read any text from the photo"** — The photo may be blurry or poorly lit. Hold the camera steady, ensure good lighting, and make sure the wine list text is in focus.
-
-**"No match found"** — The app couldn't identify any known wine varieties in the text. This can happen with very unusual wines, heavily stylized fonts, or non-Latin scripts. Try a clearer photo.
-
-**Blurry results** — Hold the camera steady and make sure the wine list text is in focus before tapping the capture button. Good lighting helps significantly with OCR accuracy.
+- **"Couldn't read any text"** — Move closer, hold the phone parallel to the page, avoid glare and tap to focus.
+- **Wines show "Not in database"** — They are still ranked from their grapes and style. Download the Full database to identify more by name.
+- **Prices say "Add a free SerpApi key"** — Add a key in Settings, or use the compare links on the wine page.
