@@ -1,4 +1,4 @@
-package com.wineselector.app.data
+package com.wineselector.core.text
 
 import java.text.Normalizer
 

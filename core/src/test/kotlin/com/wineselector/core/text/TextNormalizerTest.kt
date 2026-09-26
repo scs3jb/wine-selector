@@ -1,4 +1,4 @@
-package com.wineselector.app.data
+package com.wineselector.core.text
 
 import org.junit.Assert.*
 import org.junit.Test

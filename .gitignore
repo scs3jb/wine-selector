@@ -1,3 +1,5 @@
 app/build
 .gradle
 .buildtools
+core/build
+build

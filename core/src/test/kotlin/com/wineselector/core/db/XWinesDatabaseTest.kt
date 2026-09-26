@@ -1,8 +1,10 @@
-package com.wineselector.app.data
+package com.wineselector.core.db
 
 import org.junit.Assert.*
 import org.junit.Before
 import org.junit.Test
+import com.wineselector.core.model.FoodCategory
+import com.wineselector.core.text.TextNormalizer
 import java.io.File
 
 /**

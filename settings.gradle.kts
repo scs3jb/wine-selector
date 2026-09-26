@@ -16,3 +16,4 @@ dependencyResolutionManagement {
 
 rootProject.name = "WineSelector"
 include(":app")
+include(":core")

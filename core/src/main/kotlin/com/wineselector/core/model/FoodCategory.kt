@@ -1,4 +1,4 @@
-package com.wineselector.app.data
+package com.wineselector.core.model
 
 enum class FoodCategory(val displayName: String, val icon: String) {
     BEEF("Beef", "\uD83E\uDD69"),

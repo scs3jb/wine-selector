@@ -1,4 +1,4 @@
-package com.wineselector.app.data
+package com.wineselector.core.db
 
 import org.junit.Assert.*
 import org.junit.Test
@@ -7,7 +7,7 @@ import org.junit.Test
  * Tests for XWinesDownloader constants and DatasetSize configuration.
  * Actual download tests require an Android context (instrumentation tests).
  */
-class XWinesDownloaderTest {
+class DatasetSizeTest {
 
     @Test
     fun `SLIM URL should be HTTPS`() {

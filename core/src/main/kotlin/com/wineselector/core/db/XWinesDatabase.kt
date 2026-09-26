@@ -1,6 +1,7 @@
-package com.wineselector.app.data
+package com.wineselector.core.db
 
-import android.content.Context
+import com.wineselector.core.model.FoodCategory
+import com.wineselector.core.text.TextNormalizer
 import java.io.BufferedReader
 import java.io.DataInputStream
 import java.io.DataOutputStream
@@ -30,6 +31,19 @@ data class XWineEntry(
 
 enum class DbMatchTier { EXACT, CLOSE }
 
+/**
+ * A ranked database candidate for free text (a bottle label or a menu line).
+ * [confidence] is 0..1: how well the text explains the wine's name and winery.
+ */
+data class WineCandidate(
+    val entry: XWineEntry,
+    val confidence: Float,
+    val nameCoverage: Float,
+    val wineryCoverage: Float,
+    /** True if the text contains something specific to this wine, not just grape/region words. */
+    val hasDistinctiveEvidence: Boolean
+)
+
 enum class VintageMatch {
     EXACT,           // OCR year found in wine's vintages list
     CLOSEST,         // OCR year not found, showing data for closest vintage
@@ -57,6 +71,11 @@ class XWinesDatabase {
     private var sortedWordIndex: Map<String, MutableList<XWineEntry>> = emptyMap()
     // All unique indexed words — used for fuzzy (Levenshtein) fallback matching
     private var allIndexedWords: Set<String> = emptySet()
+    // Winery word index: significant winery-name word -> wines from that winery
+    private var wineryWordIndex: Map<String, MutableList<XWineEntry>> = emptyMap()
+    // Words that say nothing about which producer/cuvée a wine is: grape, region and country
+    // words from the data plus label vocabulary ("reserva", "brut", "old vines").
+    private var genericWords: Set<String> = GENERIC_LABEL_WORDS
 
     private data class IndexEntry(val wine: XWineEntry, val totalNameWords: Int)
 
@@ -129,6 +148,26 @@ class XWinesDatabase {
     }
 
     companion object {
+        private val GENERIC_LABEL_WORDS: Set<String> = setOf(
+            "brut", "nature", "extra", "dry", "sec", "demi", "doux", "blanc", "blancs", "noir", "noirs", "rouge",
+            "rosso", "rosato", "rosado", "tinto", "branco", "bianco", "blanco", "rose", "reserva", "riserva",
+            "reserve", "gran", "grand", "grande", "cru", "crus", "premier", "classico", "superiore", "crianza",
+            "joven", "roble", "cuvee", "vieilles", "vignes", "old", "vines", "vine", "late", "harvest", "sweet",
+            "dessert", "port", "porto", "tawny", "ruby", "vintage", "colheita", "spumante", "espumante", "cava",
+            "prosecco", "champagne", "cremant", "millesime", "selection", "special", "estate", "family", "single",
+            "vineyard", "barrel", "oak", "aged", "organic", "classic", "valley", "hills", "doc", "docg", "igt",
+            "aoc", "red", "white", "wine", "trocken", "halbtrocken", "feinherb", "kabinett", "spatlese", "auslese",
+            "village", "villages", "cotes", "coteaux", "classe", "chateau", "domaine", "bodega", "bodegas",
+            "tenuta", "cantina", "quinta", "casa", "weingut", "clos", "mas", "maison", "the", "and", "des", "les",
+            "del", "della", "dei", "degli", "delle", "rouges", "blend", "cabernet", "sauvignon", "pinot",
+            "merlot", "chardonnay", "syrah", "shiraz", "malbec", "tempranillo", "sangiovese", "nebbiolo",
+            "grenache", "garnacha", "riesling", "grigio", "gris", "zinfandel", "primitivo", "barbera"
+        )
+        private val WINERY_GENERIC_WORDS = setOf(
+            "bodegas", "bodega", "cantina", "cantine", "weingut", "azienda", "agricola", "vinicola",
+            "vinhos", "vini", "wine", "wines", "winery", "family", "estates", "company", "group",
+            "cave", "caves", "maison", "fattoria", "societa", "cooperativa", "vignerons", "sons"
+        )
         private const val BINARY_CACHE_NAME = "xwines.bin"
         private const val BINARY_VERSION: Int = 3
 
@@ -157,13 +196,6 @@ class XWinesDatabase {
             if (vintages.isEmpty()) return null
             return vintages.minByOrNull { kotlin.math.abs(it - targetYear) }
         }
-    }
-
-    fun load(context: Context) {
-        loadFromStreams(
-            context.assets.open("xwines.csv"),
-            context.assets.open("xwines_ratings.csv")
-        )
     }
 
     fun loadFromFiles(winesFile: File, ratingsFile: File) {
@@ -392,6 +424,134 @@ class XWinesDatabase {
             }
         }
         sortedWordIndex = sortIdx
+
+        val wineryIdx = HashMap<String, MutableList<XWineEntry>>(wines.size)
+        for (wine in wines) {
+            for (word in wineryWords(wine)) {
+                wineryIdx.getOrPut(word) { mutableListOf() }.add(wine)
+            }
+        }
+        wineryWordIndex = wineryIdx
+
+        val generic = HashSet<String>(GENERIC_LABEL_WORDS)
+        for (wine in wines) {
+            wine.grapes.forEach { generic.addAll(significantWords(it)) }
+            generic.addAll(significantWords(wine.regionName))
+            generic.addAll(significantWords(wine.country))
+        }
+        genericWords = generic
+    }
+
+    /** Query words for free text: normalized, OCR variants, distance-1 fuzzy corrections. */
+    private fun queryWords(text: String): Set<String> {
+        val norm = TextNormalizer.normalizeForMatching(text)
+        val rawWords = norm.replace(Regex("[^a-z0-9\\s]"), " ").split(Regex("\\s+"))
+            .filter { it.length > 2 && it.any(Char::isLetter) }
+        val query = HashSet<String>()
+        for (w in rawWords) {
+            val variants = TextNormalizer.ocrWordVariants(w)
+            query.addAll(variants)
+            if (variants.none { it in allIndexedWords || it in wineryWordIndex }) {
+                findFuzzyWordMatch(w)?.let { query.add(it) }
+                if (w.length >= 5) {
+                    TextNormalizer.fuzzyWordMatch(w, wineryWordIndex.keys, maxDistance = 1)?.let { query.add(it) }
+                }
+            }
+        }
+        return query
+    }
+
+    /**
+     * Whether [text] identifies [entry] specifically. Many X-Wines names are generic
+     * ("Chenin Blanc", "Brunello di Montalcino", "Special Selection Cabernet Sauvignon");
+     * those only count when the winery is printed too. Names with a distinctive word
+     * ("Tignanello", "Origem Merlot") need that word present.
+     */
+    fun hasDistinctiveEvidence(entry: XWineEntry, text: String): Boolean =
+        distinctiveEvidence(entry, queryWords(text))
+
+    private fun distinctiveEvidence(entry: XWineEntry, query: Set<String>): Boolean {
+        val nameDistinct = significantWords(entry.wineName).filter { it !in genericWords }
+        if (nameDistinct.isNotEmpty()) return nameDistinct.all { it in query }
+        val winery = wineryWords(entry)
+        val wineryDistinct = winery.filter { it !in genericWords }
+        if (wineryDistinct.isNotEmpty()) {
+            val hits = wineryDistinct.count { it in query }
+            return if (wineryDistinct.size <= 2) hits == wineryDistinct.size else hits * 3 >= wineryDistinct.size * 2
+        }
+        // Winery named only with generic words ("Château Margaux"): all of them must appear.
+        return winery.isNotEmpty() && winery.all { it in query }
+    }
+
+    private fun significantWords(text: String): List<String> =
+        TextNormalizer.normalizeForMatching(text)
+            .replace(Regex("[^a-z\\s]"), " ")
+            .split(Regex("\\s+"))
+            .filter { it.length > 2 && it !in STOP_WORDS }
+            .distinct()
+
+    private fun wineryWords(wine: XWineEntry): List<String> =
+        significantWords(wine.wineryName).filter { it !in WINERY_GENERIC_WORDS }
+
+    /** All loaded wines (read-only). */
+    val entries: List<XWineEntry> get() = wines
+
+    /**
+     * Rank database wines against free text such as a bottle label or a full menu
+     * entry. Unlike [findMatchTiered] this tolerates extra words (regions, back-label
+     * text) and uses the winery name, which X-Wines keeps separate from the wine name
+     * but labels and menus usually print. OCR typos are recovered with distance-1
+     * fuzzy word matching.
+     */
+    fun searchCandidates(text: String, limit: Int = 5, minConfidence: Float = 0.3f): List<WineCandidate> {
+        if (text.isBlank() || wines.isEmpty()) return emptyList()
+        val norm = TextNormalizer.normalizeForMatching(text)
+        val rawWords = norm.replace(Regex("[^a-z0-9\\s]"), " ").split(Regex("\\s+"))
+            .filter { it.length > 2 && it.any(Char::isLetter) }
+        val query = HashSet(queryWords(text))
+        query.removeAll(STOP_WORDS)
+        val significantQueryCount = rawWords.filter { it !in STOP_WORDS }.distinct().size.coerceAtLeast(1)
+
+        // Candidate generation: count index hits, keep the most promising.
+        val hits = HashMap<XWineEntry, Int>(64)
+        for (word in query) {
+            nameWordIndex[word]?.forEach { hits[it.wine] = (hits[it.wine] ?: 0) + 2 }
+            wineryWordIndex[word]?.forEach { hits[it] = (hits[it] ?: 0) + 1 }
+        }
+        if (hits.isEmpty()) return emptyList()
+        val shortlist = hits.entries.sortedByDescending { it.value }.take(400).map { it.key }
+
+        val scored = shortlist.mapNotNull { wine ->
+            val nameWords = significantWords(wine.wineName)
+            if (nameWords.isEmpty()) return@mapNotNull null
+            val nameHits = nameWords.count { it in query }
+            if (nameHits == 0) return@mapNotNull null
+            val coverage = nameHits.toFloat() / nameWords.size
+            val wWords = wineryWords(wine)
+            val wineryCoverage = if (wWords.isEmpty()) 0f else wWords.count { it in query }.toFloat() / wWords.size
+            val precision = ((nameHits + (wineryCoverage * wWords.size)) / significantQueryCount).coerceAtMost(1f)
+            val grapeHit = wine.grapes.any { g ->
+                val gn = TextNormalizer.normalizeForMatching(g)
+                gn.length > 3 && norm.contains(gn)
+            }
+            val regionHit = wine.regionName.length > 3 &&
+                norm.contains(TextNormalizer.normalizeForMatching(wine.regionName))
+            val evidence = distinctiveEvidence(wine, query)
+            var confidence = 0.55f * coverage + 0.25f * wineryCoverage + 0.1f * precision +
+                (if (grapeHit) 0.05f else 0f) + (if (regionHit) 0.05f else 0f)
+            if (!evidence) confidence *= 0.75f
+            // A lone generic name word ("Reserva", "Tinto") is weak evidence on its own.
+            if (nameWords.size == 1 && wineryCoverage == 0f) confidence *= 0.6f
+            if (coverage < 0.5f) confidence *= 0.7f
+            WineCandidate(wine, confidence.coerceIn(0f, 1f), coverage, wineryCoverage, evidence)
+        }
+        return scored
+            .filter { it.confidence >= minConfidence }
+            .sortedWith(compareByDescending<WineCandidate> { it.confidence }
+                .thenByDescending { it.entry.averageRating ?: 0f }
+                .thenBy { it.entry.wineName })
+            .distinctBy { it.entry.wineId }
+            .take(limit)
     }
 
     // ==========================================
