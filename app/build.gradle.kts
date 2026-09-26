@@ -18,15 +18,22 @@ android {
 
     }
 
+    // Release signing is optional: the keystore only exists on the maintainer's
+    // machine. Without it, debug builds (and CI) still work.
+    val keystoreDir = File(System.getProperty("user.home"), "documents/sync/personal/keystore")
+    val keystorePasswords = File(keystoreDir, "wine-selector.release.pswd")
+    val hasReleaseKeystore = keystorePasswords.exists()
+
     signingConfigs {
-        create("release") {
-            val keystoreDir = File(System.getProperty("user.home"), "documents/sync/personal/keystore")
-            val props = Properties()
-            File(keystoreDir, "wine-selector.release.pswd").inputStream().use { props.load(it) }
-            storeFile = File(keystoreDir, "wine-selector.release.keystore")
-            storePassword = props.getProperty("storePassword")
-            keyAlias = props.getProperty("keyAlias")
-            keyPassword = props.getProperty("keyPassword")
+        if (hasReleaseKeystore) {
+            create("release") {
+                val props = Properties()
+                keystorePasswords.inputStream().use { props.load(it) }
+                storeFile = File(keystoreDir, "wine-selector.release.keystore")
+                storePassword = props.getProperty("storePassword")
+                keyAlias = props.getProperty("keyAlias")
+                keyPassword = props.getProperty("keyPassword")
+            }
         }
     }
 
@@ -37,7 +44,7 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
-            signingConfig = signingConfigs.getByName("release")
+            if (hasReleaseKeystore) signingConfig = signingConfigs.getByName("release")
         }
     }
 
